@@ -1,0 +1,736 @@
+#!/bin/bash
+
+# ============================================
+# Tizen OpenGL/EGL CTS 测试运行脚本（简化版）
+# 支持运行多个测试套件，每个套件独立汇总
+# 生成QPA文件，生成summary报告
+# 使用 --deqp-stdin-caselist 参数分组运行测试用例，分成3组
+# ============================================
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+RESULT_DIR="${SCRIPT_DIR}/test_results"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# 创建结果目录
+mkdir -p "${RESULT_DIR}/qpa"
+mkdir -p "${RESULT_DIR}/csv"
+
+# Wayland 显示配置
+WAYLAND_DISPLAY="wayland-0"
+
+# 分组数量配置：将测试用例分成多少组运行
+GROUP_COUNT=50
+
+# 测试套件配置：数组包含(测试用例文件名, 测试可执行文件名)
+TEST_SUITES=(     
+    "egl-main-2020-03-01.txt:deqp-egl:egl"
+    #"gles2-main-2020-03-01.txt:deqp-gles2:gles2"
+    #"gles3-main-2020-03-01.txt:deqp-gles3:gles3"
+    #"gles31-main-2020-03-01.txt:deqp-gles31:gles31"   
+)
+
+# 总体统计
+total_pass_count=0
+total_fail_count=0
+total_not_supported_count=0
+total_error_count=0
+total_test_num=0
+
+echo "========================================"
+echo "OpenGL/EGL CTS 测试运行 (多套件)"
+echo "========================================"
+echo "开始时间: $(date)"
+echo "Wayland Display: ${WAYLAND_DISPLAY}"
+echo "========================================"
+echo ""
+
+# 检查sdb
+echo "检查sdb连接..."
+if ! command -v sdb > /dev/null 2>&1; then
+    echo "错误: 未找到sdb命令"
+    exit 1
+fi
+
+if ! sdb get-serialno > /dev/null 2>&1; then
+    echo "错误: 无法连接到设备"
+    exit 1
+fi
+
+echo "已连接到设备: $(sdb get-serialno)"
+echo ""
+
+# 检查设备上的 Wayland 显示
+echo "检查设备上的 Wayland 显示..."
+wayland_check=$(sdb shell "ls /run/user/\$(id -u)/ 2>/dev/null | grep wayland" 2>&1)
+if [ -n "$wayland_check" ]; then
+    echo "设备上可用的 Wayland 显示: ${wayland_check}"
+else
+    echo "警告: 未找到 Wayland 显示套接字"
+fi
+
+# 检查设备上的基本环境
+echo "检查设备环境..."
+echo "设备系统信息:"
+sdb shell "uname -a" 2>&1 | head -3
+echo "设备用户ID: $(sdb shell "id -u" 2>/dev/null)"
+echo "设备XDG_RUNTIME_DIR内容:"
+sdb shell "ls -la /run/user/\$(id -u)/ 2>/dev/null" 2>&1 | head -10
+echo ""
+
+start_time=$(date +%s)
+
+# 遍历每个测试套件
+for suite_config in "${TEST_SUITES[@]}"; do
+    IFS=':' read -r test_cases_file test_binary test_name <<< "$suite_config"
+
+    TEST_CASES_FILE="${SCRIPT_DIR}/android/cts/main/${test_cases_file}"
+    if [ -f "$TEST_CASES_FILE" ]; then
+        total_count=0
+        while IFS= read -r line; do
+            if [ -n "$line" ] && [[ ! "$line" == \#* ]]; then
+                total_count=$((total_count + 1))
+            fi
+        done < "${TEST_CASES_FILE}"
+        SUITE_TOTAL_CASES[$test_name]=$total_count
+    else
+        echo ""
+        continue
+    fi
+
+    # QPA文件路径
+    QPA_FILE="${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}.qpa"
+
+    # 每个套件的summary文件
+    SUITE_SUMMARY_FILE="${RESULT_DIR}/summary_${test_name}_${TIMESTAMP}.txt"
+    
+
+    # 套件统计变量
+    pass_count=0
+    fail_count=0
+    not_supported_count=0
+    error_count=0
+    test_num=0
+
+    total_tests=$(wc -l < "${TEST_CASES_FILE}")
+
+    echo "========================================"
+    echo "测试套件: ${test_name}"
+    echo "========================================"
+    echo "开始时间: $(date)"
+    echo "总测试数量: ${SUITE_TOTAL_CASES[$test_name]}"
+    echo "实际运行测试数量: 0"
+    echo "========================================"
+    echo ""
+
+    # 在每个测试套件运行前重新连接设备，防止设备断开
+    echo "重新连接设备..."
+    if ! sdb connect "$(sdb get-serialno)" > /dev/null 2>&1; then
+        echo "警告: 重新连接设备失败，尝试继续..."
+    else
+        echo "设备连接成功"
+    fi
+    echo ""
+
+    # 根据测试套件选择对应的模块目录
+    case "$test_name" in
+        "egl")
+            MODULE_DIR="modules/egl"
+            ;;
+        "gles2")
+            MODULE_DIR="modules/gles2"
+            ;;
+        "gles3")
+            MODULE_DIR="modules/gles3"
+            ;;
+        "gles31")
+            MODULE_DIR="modules/gles31"
+            ;;
+        *)
+            echo "未知测试套件: ${test_name}"
+            continue
+            ;;
+    esac
+
+    # 创建临时QPA文件
+    TEMP_QPA="/opt/media/USBDriveA1/${test_name}_${TIMESTAMP}.qpa"
+
+    # 收集所有测试用例到数组
+    test_cases=()
+    exec 3< "${TEST_CASES_FILE}"
+    while IFS= read -r line <&3 || [ -n "$line" ]; do
+        # 跳过空行和注释行
+        if [ -n "$line" ] && [[ ! "$line" == \#* ]]; then
+            test_cases+=("$line")
+        fi
+    done
+    exec 3<&-
+
+    # 使用分片文件的方式运行测试用例，确保所有测试用例都被包含
+    echo "总测试用例数 (从文件计算): ${total_tests}"
+    
+    # 固定分成100组
+    total_groups=${GROUP_COUNT}
+    
+    echo "分组数: ${total_groups}"
+    
+    # 计算每组的测试用例数量
+    cases_per_group=$((total_tests / total_groups))
+    remainder=$((total_tests % total_groups))
+    
+    # 创建一个文件来记录未运行的测试用例
+    unrun_cases_file="/tmp/${test_name}_unrun_cases.txt"
+    > "${unrun_cases_file}"
+    
+    # 分组运行测试用例
+    for ((group_index=0; group_index<total_groups; group_index++)); do
+        echo "运行测试用例组 ${group_index}/${total_groups}"
+        
+        # 计算当前组的起始和结束行号
+        start_line=$((group_index * cases_per_group + 1))
+        end_line=$((start_line + cases_per_group - 1))
+        
+        # 处理余数，将多余的测试用例分配给前面的组
+        if [ $group_index -lt $remainder ]; then
+            start_line=$((start_line + group_index))
+            end_line=$((end_line + group_index + 1))
+        else
+            start_line=$((start_line + remainder))
+            end_line=$((end_line + remainder))
+        fi
+        
+        echo "运行测试组 ${group_index}/${total_groups}: 行${start_line}-${end_line}"
+        
+        # 创建当前组的测试用例文件
+        group_cases_file="/tmp/${test_name}_group_${group_index}.txt"
+        sed -n "${start_line},${end_line}p" "${TEST_CASES_FILE}" > "${group_cases_file}"
+        
+        # 将测试用例文件上传到设备
+        sdb push "${group_cases_file}" "/tmp/${test_name}_group_${group_index}.txt" > /dev/null 2>&1
+        
+        # 检查sdb连接
+        if ! sdb get-serialno > /dev/null 2>&1; then
+            echo "警告: sdb连接断开，尝试重连..."
+            sleep 2
+            if ! sdb get-serialno > /dev/null 2>&1; then
+                echo "错误: 无法重新连接设备，跳过此测试组"
+                error_count=$((error_count + 1))
+                # 清理临时文件
+                rm -f "${group_cases_file}" > /dev/null 2>&1
+                sdb shell "rm -f /tmp/${test_name}_group_${group_index}.txt" > /dev/null 2>&1
+                continue
+            fi
+            echo "sdb重连成功"
+        fi
+
+        # 通过sdb shell运行测试组，使用--deqp-stdin-caselist参数
+        # 使用su -c来确保以root权限运行
+        # 不显示详细的测试输出，只显示关键信息
+        echo "正在运行测试组 ${group_index}/${total_groups}..."
+        output=$(sdb shell "su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && cat /tmp/${test_name}_group_${group_index}.txt | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa'" 2>&1)
+        exit_code=$?
+
+        # 检查测试结果
+        # 从输出中提取统计信息
+        group_pass_count=$(echo "$output" | grep -o "Passed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        group_fail_count=$(echo "$output" | grep -o "Failed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        group_not_supported_count=$(echo "$output" | grep -o "Not supported: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        
+        # 计算实际运行的测试用例数量
+        group_total_count=$((group_pass_count + group_fail_count + group_not_supported_count))
+        
+        # 显示该组测试用例文件的信息，帮助诊断问题
+        group_line_count=$(wc -l < "${group_cases_file}")
+        echo "  诊断信息: 测试用例文件行数=$group_line_count, 实际运行=$group_total_count, 差异=$((group_line_count - group_total_count))"
+        
+        # 检查是否有测试用例出错导致退出
+        if [ $((group_line_count - group_total_count)) -gt 0 ]; then
+            echo "  警告: 有 $((group_line_count - group_total_count)) 个测试用例没有被运行"
+            # 增加调试日志：记录时间戳和组信息
+            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 有未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  [DEBUG] 期望运行: $group_line_count, 实际运行: $group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 检查输出中是否有错误信息
+            if echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
+                echo "  检测到错误信息:"
+                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5
+                # 记录错误信息到调试日志
+                echo "  [DEBUG] 检测到的错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            else
+                echo "  输出中没有包含 ERROR|FATAL|CRASH|ABORT 关键字"
+                echo "  [DEBUG] 输出中未检测到明显错误关键字" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            # 检查退出码
+            if [ $exit_code -ne 0 ]; then
+                echo "  测试程序退出码: $exit_code"
+                echo "  [DEBUG] 测试程序异常退出，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            else
+                echo "  测试程序退出码是0，表示正常退出"
+                echo "  [DEBUG] 测试程序正常退出，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            # 显示更多输出信息帮助诊断
+            echo "  测试程序输出摘要:"
+            echo "$output" | head -10
+            echo "  ..."
+            echo "$output" | tail -10
+            
+            # 记录输出摘要到调试日志
+            echo "  [DEBUG] 测试程序输出摘要:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "$output" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  ..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "$output" | tail -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 显示测试用例文件的前几行和后几行，帮助诊断
+            echo "  测试用例文件摘要:"
+            echo "  前5行:"
+            head -5 "${group_cases_file}"
+            echo "  后5行:"
+            tail -5 "${group_cases_file}"
+            
+            # 记录测试用例文件信息到调试日志
+            echo "  [DEBUG] 测试用例文件前5行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            head -5 "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  [DEBUG] 测试用例文件后5行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            tail -5 "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 如果有测试用例没有被运行，将它们记录到未运行的测试用例文件中
+            if [ $((group_line_count - group_total_count)) -gt 0 ]; then
+                echo "  记录未运行的测试用例..."
+                # 计算未运行的测试用例的起始行号
+                unrun_start_line=$((group_total_count + 1))
+                # 将未运行的测试用例追加到未运行的测试用例文件中
+                sed -n "${unrun_start_line},\$p" "${group_cases_file}" >> "${unrun_cases_file}"
+                echo "  已记录 $((group_line_count - group_total_count)) 个未运行的测试用例"
+                
+                # 增加调试日志：记录未运行的测试用例列表
+                echo "  [DEBUG] 未运行的测试用例列表:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                sed -n "${unrun_start_line},\$p" "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+        fi
+        
+        # 检查是否真的出错（更严格的错误检查）
+        real_error=false
+        if [ $exit_code -ne 0 ]; then
+            real_error=true
+        elif echo "$output" | grep -q "ERROR:" || echo "$output" | grep -q "FATAL:" || echo "$output" | grep -q "CRASH:" || echo "$output" | grep -q "ABORT:"; then
+            # 只有当这些关键字后面跟着错误信息时才算真正的错误
+            if echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | grep -qE "(failed|error|crash|abort)"; then
+                real_error=true
+            fi
+        fi
+        
+        if [ "$real_error" = true ]; then
+            error_count=$((error_count + 1))
+            echo "结果: 组运行出错"
+            echo "退出码: $exit_code"
+            # 记录错误信息到调试日志
+            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 运行出错，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 增加更详细的退出码解释
+            if [ $exit_code -gt 128 ]; then
+                # 退出码大于128通常表示进程被信号终止
+                signal_num=$((exit_code - 128))
+                echo "警告: 测试进程可能被信号终止 (信号: $signal_num)"
+                echo "  [DEBUG] 测试进程被信号终止 (信号: $signal_num)" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                case $signal_num in
+                    9)  echo "  信号详情: SIGKILL (进程被强制杀死)" ;;
+                    11) echo "  信号详情: SIGSEGV (段错误，内存访问违规)" ;;
+                    6)  echo "  信号详情: SIGABRT (进程异常终止)" ;;
+                    14) echo "  信号详情: SIGALRM (定时器信号)" ;;
+                    *)  echo "  信号详情: 未知信号 ($signal_num)" ;;
+                esac
+            elif [ $exit_code -eq 127 ]; then
+                echo "错误: 命令未找到"
+                echo "  [DEBUG] 错误: 命令未找到" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            elif [ $exit_code -eq 126 ]; then
+                echo "错误: 命令不可执行"
+                echo "  [DEBUG] 错误: 命令不可执行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            
+            # 检查是否有core dump文件
+            core_check=$(sdb shell "ls /tmp/core.* 2>/dev/null | wc -l" 2>/dev/null)
+            if [ "$core_check" -gt 0 ] && [ "$core_check" != "" ]; then
+                echo "警告: 检测到 $core_check 个core dump文件"
+                echo "  [DEBUG] 警告: 检测到 $core_check 个core dump文件" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                sdb shell "ls -la /tmp/core.* 2>/dev/null" | head -5
+            fi
+            
+            if echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)"; then
+                echo "错误信息:"
+                echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | head -3
+                # 记录错误信息到调试日志
+                echo "  [DEBUG] 错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | head -3 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            # 即使出错，也尝试统计运行的测试用例数
+            pass_count=$((pass_count + group_pass_count))
+            fail_count=$((fail_count + group_fail_count))
+            not_supported_count=$((not_supported_count + group_not_supported_count))
+            test_num=$((test_num + group_total_count))
+            echo "结果: 组运行完成 (通过: $group_pass_count, 失败: $group_fail_count, 不支持: $group_not_supported_count, 总计: $group_total_count)"
+            # 记录结果到调试日志
+            echo "  [DEBUG] 组运行结果: 通过=$group_pass_count, 失败=$group_fail_count, 不支持=$group_not_supported_count, 总计=$group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        else
+            pass_count=$((pass_count + group_pass_count))
+            fail_count=$((fail_count + group_fail_count))
+            not_supported_count=$((not_supported_count + group_not_supported_count))
+            test_num=$((test_num + group_total_count))
+            echo "结果: 组运行完成 (通过: $group_pass_count, 失败: $group_fail_count, 不支持: $group_not_supported_count, 总计: $group_total_count)"
+            # 记录结果到调试日志
+            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 运行完成，通过=$group_pass_count, 失败=$group_fail_count, 不支持=$group_not_supported_count, 总计=$group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        fi
+        
+        # 如果有失败的测试用例，显示失败的测试用例数量
+        if [ $group_fail_count -gt 0 ]; then
+            echo "失败的测试用例数量: $group_fail_count"
+        fi
+        
+        # 只在出错时显示详细输出
+        if [ "$real_error" = true ]; then
+            echo "详细输出:"
+            echo "---------"
+            echo "$output" | tail -20
+            echo "---------"
+        fi
+        
+        echo ""
+        
+        # 下载该组的QPA文件
+        sdb pull "/opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa" "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_group_${group_index}.qpa" 2>/dev/null
+        
+        # 清理临时文件
+        rm -f "${group_cases_file}" > /dev/null 2>&1
+        sdb shell "rm -f /tmp/${test_name}_group_${group_index}.txt /opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa" > /dev/null 2>&1
+        
+        # 如果连续出现错误，提供更多诊断信息
+        if [ $error_count -gt 2 ] && [ $group_index -le 2 ]; then
+            echo "警告: 前几个测试组中出现错误，可能存在问题"
+            echo "设备信息:"
+            sdb shell "uname -a" 2>&1 | head -5
+            echo "设备上VK-GL-CTS目录内容:"
+            sdb shell "ls -la /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR}/" 2>&1 | head -10
+            echo ""
+        fi
+        
+        # 每个组完成后短暂休息
+        sleep 5
+    done
+    
+    # 运行未运行的测试用例
+    if [ -s "${unrun_cases_file}" ]; then
+        unrun_count=$(wc -l < "${unrun_cases_file}")
+        echo "运行未运行的测试用例: ${unrun_count} 个"
+        # 记录调试信息
+        echo "  [DEBUG] $(date): 开始运行 ${unrun_count} 个未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        
+        # 显示未运行的测试用例列表
+        echo "  未运行的测试用例列表:"
+        head -10 "${unrun_cases_file}"
+        if [ $unrun_count -gt 10 ]; then
+            echo "  ... (还有 $((unrun_count - 10)) 个)"
+        fi
+        
+        # 记录未运行的测试用例列表到调试日志
+        echo "  [DEBUG] 未运行的测试用例列表:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        cat "${unrun_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        
+        # 将未运行的测试用例文件上传到设备
+        sdb push "${unrun_cases_file}" "/tmp/${test_name}_unrun_cases.txt" > /dev/null 2>&1
+        
+        # 通过sdb shell运行未运行的测试用例，使用--deqp-stdin-caselist参数
+        # 使用su -c来确保以root权限运行
+        # 不显示详细的测试输出，只显示关键信息
+        echo "正在运行未运行的测试用例..."
+        echo "  [DEBUG] $(date): 准备执行未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        
+        # 检查本地测试用例文件是否为空
+        if [ ! -s "${unrun_cases_file}" ]; then
+            echo "  [DEBUG] 本地测试用例文件为空，跳过执行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  跳过执行：测试用例文件为空"
+            unrun_pass_count=0
+            unrun_fail_count=0
+            unrun_not_supported_count=0
+            unrun_total_count=0
+            exit_code=0
+        else
+            echo "  [DEBUG] 本地测试用例文件行数: $(wc -l < "${unrun_cases_file"})" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 检查设备上是否存在测试用例文件
+            echo "  [DEBUG] 检查设备上是否存在测试用例文件..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            sdb_check=$(sdb shell "ls -la /tmp/${test_name}_unrun_cases.txt 2>/dev/null || echo 'FILE_NOT_FOUND'")
+            echo "  [DEBUG] 设备上文件检查结果: $sdb_check" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 检查设备上测试可执行文件是否存在
+            echo "  [DEBUG] 检查设备上测试可执行文件是否存在..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            binary_check=$(sdb shell "ls -la /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR}/${test_binary} 2>/dev/null || echo 'BINARY_NOT_FOUND'")
+            echo "  [DEBUG] 设备上可执行文件检查结果: $binary_check" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            # 显示将要执行的完整命令
+            cmd="su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && cat /tmp/${test_name}_unrun_cases.txt | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_unrun.qpa'"
+            echo "  [DEBUG] 执行命令: $cmd" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  执行命令: $cmd"
+            
+            # 执行命令并捕获输出
+            echo "  [DEBUG] 开始执行命令..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  执行命令中..."
+            echo "  命令输出:"
+            output=$(sdb shell "$cmd" 2>&1)
+            exit_code=$?
+            echo "$output"
+            echo "  命令执行完成"
+            echo "  退出码: $exit_code"
+        fi
+        
+        # 记录完整的输出和退出码到调试日志
+        echo "  [DEBUG] 未运行测试用例执行完成" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        echo "  [DEBUG] 退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        echo "  [DEBUG] 完整输出:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        echo "$output" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        echo "  [DEBUG] 输出结束" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+
+        # 检查测试结果
+        # 从输出中提取统计信息
+        unrun_pass_count=$(echo "$output" | grep -o "Passed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        unrun_fail_count=$(echo "$output" | grep -o "Failed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        unrun_not_supported_count=$(echo "$output" | grep -o "Not supported: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        
+        # 计算实际运行的测试用例数量
+        unrun_total_count=$((unrun_pass_count + unrun_fail_count + unrun_not_supported_count))
+        
+        echo "未运行的测试用例结果: 通过=$unrun_pass_count, 失败=$unrun_fail_count, 不支持=$unrun_not_supported_count, 总计=$unrun_total_count"
+        
+        # 记录结果到调试日志
+        echo "  [DEBUG] 未运行测试用例执行结果: 通过=$unrun_pass_count, 失败=$unrun_fail_count, 不支持=$unrun_not_supported_count, 总计=$unrun_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        
+        # 检查是否有错误
+        if [ $exit_code -ne 0 ] || [ $unrun_total_count -ne $unrun_count ] || echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
+            echo "  警告: 运行未运行的测试用例时出现问题"
+            echo "  [DEBUG] 警告: 运行未运行的测试用例时出现问题" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            
+            if [ $exit_code -ne 0 ]; then
+                echo "    退出码: $exit_code"
+                echo "    [DEBUG] 退出码异常: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            
+            if [ $unrun_total_count -ne $unrun_count ]; then
+                echo "    期望运行: $unrun_count, 实际运行: $unrun_total_count"
+                echo "    [DEBUG] 运行数量不匹配: 期望=$unrun_count, 实际=$unrun_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                
+                # 添加更详细的诊断信息
+                echo "    [DEBUG] 详细诊断信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 测试用例文件行数: $(wc -l < "${unrun_cases_file}")" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 测试用例文件大小: $(wc -c < "${unrun_cases_file}") 字节" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 测试用例文件前10行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                head -10 "${unrun_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            
+            if echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
+                echo "    检测到错误信息:"
+                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5
+                echo "    [DEBUG] 检测到错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+            
+            # 如果没有运行任何测试用例，显示更多诊断信息
+            if [ $unrun_total_count -eq 0 ]; then
+                echo "    [DEBUG] 严重问题: 没有运行任何测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 检查测试用例格式是否正确" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 检查测试可执行文件是否正常工作" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG]   - 检查环境变量设置是否正确" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                
+                # 尝试运行一个简单的测试用例来验证环境
+                echo "    [DEBUG] 尝试运行单个测试用例进行验证..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                first_case=$(head -1 "${unrun_cases_file}")
+                echo "    [DEBUG] 运行测试用例: $first_case" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                test_output=$(sdb shell "su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && echo \"$first_case\" | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_single.qpa' --deqp-surface-width=400 --deqp-surface-height=300 --deqp-visibility=hidden" 2>&1)
+                test_exit_code=$?
+                echo "    [DEBUG] 单个测试用例执行结果，退出码: $test_exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "    [DEBUG] 单个测试用例输出:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                echo "$test_output" | head -20 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            fi
+        fi
+        
+        # 更新统计信息
+        pass_count=$((pass_count + unrun_pass_count))
+        fail_count=$((fail_count + unrun_fail_count))
+        not_supported_count=$((not_supported_count + unrun_not_supported_count))
+        test_num=$((test_num + unrun_total_count))
+        
+        # 下载未运行的测试用例的QPA文件
+        sdb pull "/opt/media/USBDriveA1/${test_name}_test_unrun.qpa" "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_unrun.qpa" 2>/dev/null
+        
+        # 清理未运行的测试用例文件
+        rm -f "${unrun_cases_file}" > /dev/null 2>&1
+        sdb shell "rm -f /tmp/${test_name}_unrun_cases.txt /opt/media/USBDriveA1/${test_name}_test_unrun.qpa" > /dev/null 2>&1
+    else
+        echo "没有未运行的测试用例需要重新运行"
+        echo "  [DEBUG] $(date): 没有未运行的测试用例需要重新运行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+    fi
+    exec 3<&-
+
+    # 累加到总体统计
+    total_pass_count=$((total_pass_count + pass_count))
+    total_fail_count=$((total_fail_count + fail_count))
+    total_not_supported_count=$((total_not_supported_count + not_supported_count))
+    total_error_count=$((total_error_count + error_count))
+    total_test_num=$((total_test_num + test_num))
+
+    # 计算通过率
+    if [ "$test_num" -gt 0 ]; then
+        pass_rate=$(awk -v pass="$pass_count" -v total="$test_num" 'BEGIN {printf "%.2f", (pass/total)*100}')
+    else
+        pass_rate="0.00"
+    fi
+
+    # 合并所有QPA文件
+    echo "合并所有QPA文件..."
+    MERGED_QPA_FILE="${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_merged.qpa"
+    
+    # 初始化合并文件，只处理第一个存在的QPA文件
+    first_file=true
+    session_info_extracted=false
+    
+    # 创建一个临时文件来存储合并后的内容
+    temp_merged_file="/tmp/${test_name}_${TIMESTAMP}_merged.qpa"
+    > "${temp_merged_file}"
+    
+    # 遍历所有QPA文件并合并它们的内容
+    for qpa_file in "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_group_"*.qpa "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_unrun.qpa"; do
+        if [ -f "$qpa_file" ]; then
+            if [ "$first_file" = true ]; then
+                # 对于第一个文件，保留完整的XML结构
+                cat "$qpa_file" > "${temp_merged_file}"
+                first_file=false
+                session_info_extracted=true
+            else
+                # 对于后续文件，只提取测试用例部分
+                # 跳过XML声明、TestLog标签和SessionInfo标签
+                in_session_info=false
+                in_test_case=false
+                
+                while IFS= read -r line; do
+                    # 检查是否进入SessionInfo标签
+                    if [[ $line == *"<SessionInfo>"* ]]; then
+                        in_session_info=true
+                        continue
+                    fi
+                    
+                    # 检查是否离开SessionInfo标签
+                    if [[ $line == *"</SessionInfo>"* ]]; then
+                        in_session_info=false
+                        continue
+                    fi
+                    
+                    # 如果在SessionInfo标签内，跳过
+                    if [ "$in_session_info" = true ]; then
+                        continue
+                    fi
+                    
+                    # 检查是否是XML声明行，跳过
+                    if [[ $line == *"<?xml version"* ]]; then
+                        continue
+                    fi
+                    
+                    # 检查是否是TestLog开始标签，跳过
+                    if [[ $line == *"<TestLog>"* ]]; then
+                        continue
+                    fi
+                    
+                    # 检查是否是TestLog结束标签，跳过
+                    if [[ $line == *"</TestLog>"* ]]; then
+                        continue
+                    fi
+                    
+                    # 如果不是以上情况，将行写入合并文件
+                    echo "$line" >> "${temp_merged_file}"
+                done < "$qpa_file"
+            fi
+        fi
+    done
+    
+    # 如果至少处理了一个文件，替换TestLog结束标签
+    if [ "$first_file" = false ]; then
+        # 移除最后一行(应该是TestLog结束标签)，然后添加正确的结束标签
+        head -n -1 "${temp_merged_file}" > "${MERGED_QPA_FILE}"
+        echo "</TestLog>" >> "${MERGED_QPA_FILE}"
+        echo "QPA文件合并完成: ${MERGED_QPA_FILE}"
+    else
+        # 如果没有QPA文件，创建一个基本的QPA文件
+        echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><TestLog></TestLog>" > "${MERGED_QPA_FILE}"
+        echo "没有QPA文件需要合并，创建了基本的QPA文件: ${MERGED_QPA_FILE}"
+    fi
+    
+    # 清理临时文件
+    rm -f "${temp_merged_file}" > /dev/null 2>&1
+    
+    # 将合并后的QPA文件上传到设备
+    sdb push "${MERGED_QPA_FILE}" "/tmp/${test_name}_test.qpa" > /dev/null 2>&1
+    
+    # 在设备上转换QPA为CSV
+    echo "在设备上转换QPA为CSV..."
+    CSV_FILE="${RESULT_DIR}/csv/${test_name}_${TIMESTAMP}.csv"
+    sdb shell "/usr/bin/VK-GL-CTS-1.4.5/executor/testlog-to-csv /tmp/${test_name}_test.qpa" \> "/tmp/${test_name}_test.csv" 2>/dev/null
+
+    # 下载CSV文件
+    sdb pull "/tmp/${test_name}_test.csv" "${CSV_FILE}" 2>/dev/null
+    if [ -f "$CSV_FILE" ]; then
+        csv_lines=$(wc -l < "$CSV_FILE")
+        if [ "$csv_lines" -gt 0 ]; then
+            echo "CSV转换成功 ($csv_lines 行): $CSV_FILE"
+        else
+            echo "CSV转换成功但文件为空: $CSV_FILE"
+        fi
+    else
+        echo "CSV转换失败或不存在"
+    fi
+
+    # 清理设备上的临时QPA和CSV文件
+    sdb shell "rm -f /tmp/${test_name}_test.qpa /tmp/${test_name}_test.csv" 2>/dev/null
+    echo ""
+    
+    # 清理设备上的临时CSV文件
+    sdb shell "rm -f /tmp/*.csv" 2>/dev/null
+
+    echo "测试结果汇总:"
+    echo "  总测试数: ${test_num}"
+    echo "  通过: ${pass_count}"
+    echo "  失败: ${fail_count}"
+    echo "  不支持: ${not_supported_count}"
+    echo "  错误: ${error_count}"
+    echo "  通过率: ${pass_rate}%"
+    echo ""
+
+    # 生成summary报告
+    {
+        echo "=========================================="
+        echo "OpenGL/EGL CTS 测试报告: ${test_name}"
+        echo "=========================================="
+        echo "测试时间: $(date)"
+        echo "=========================================="
+        echo ""
+        echo "测试结果汇总:"
+        echo "=========================================="
+        echo "  总测试数: ${test_num}"
+        echo "  通过: ${pass_count}"
+        echo "  失败: ${fail_count}"
+        echo "  不支持: ${not_supported_count}"
+        echo "  错误: ${error_count}"
+        echo "=========================================="
+        echo ""
+        echo "文件位置:"
+        echo "  QPA文件: ${MERGED_QPA_FILE}"
+        if [ -f "$CSV_FILE" ]; then
+            echo "  CSV文件: ${CSV_FILE}"
+        else
+            echo "  CSV文件: 未生成"
+        fi
+        echo "  Summary: ${SUITE_SUMMARY_FILE}"
+        echo "=========================================="
+        echo ""
+        echo "=========================================="
+    } > "${SUITE_SUMMARY_FILE}"
+
+    echo "Summary报告生成成功: ${SUITE_SUMMARY_FILE}"
+    echo ""
+done
+
