@@ -1,92 +1,98 @@
-#!/bin/bash
-
 # ============================================
-# Tizen OpenGL/EGL CTS 测试运行脚本 (带自动重跑功能)
+# 测试收尾：生成报告与 CSV 转换
 # ============================================
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-RESULT_DIR="${SCRIPT_DIR}/test_results"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+echo "----------------------------------------"
+echo "正在生成最终测试报告..."
+echo "----------------------------------------"
 
-declare -A SUITE_TOTAL_CASES
-mkdir -p "${RESULT_DIR}/qpa" "${RESULT_DIR}/csv" "${RESULT_DIR}/logs"
-
-# 配置区
-WAYLAND_DISPLAY="wayland-0"
-GROUP_COUNT=50
-DEVICE_TEMP_DIR="/tmp/cts_temp"
-DEVICE_QPA_DIR="/opt/media/USBDriveA1"
-
-TEST_SUITES=(
-    "egl-main-2020-03-01.txt:deqp-egl:egl"
-)
-
-# 环境初始化
-sdb shell "mkdir -p ${DEVICE_TEMP_DIR} ${DEVICE_QPA_DIR}"
-
+# 遍历每个测试套件
 for suite_config in "${TEST_SUITES[@]}"; do
     IFS=':' read -r case_file binary_name suite_name <<< "$suite_config"
-    CASE_PATH="${SCRIPT_DIR}/android/cts/main/${case_file}"
-    [ ! -f "$CASE_PATH" ] && continue
-
-    # 提取所有有效用例到临时数组
-    mapfile -t ALL_CASES < <(grep -vE '^(#|[[:space:]]*$)' "$CASE_PATH")
-    actual_total=${#ALL_CASES[@]}
     
-    echo "--- 套件: ${suite_name} (总计: ${actual_total}) ---"
+    SUITE_QPA_DIR="${RESULT_DIR}/qpa"
+    SUITE_CSV_DIR="${RESULT_DIR}/csv"
+    FINAL_SUMMARY="${RESULT_DIR}/summary_${suite_name}_${TIMESTAMP}.txt"
     
-    # 分组计算
-    cases_per_group=$(( (actual_total + GROUP_COUNT - 1) / GROUP_COUNT ))
+    # 1. 汇总所有统计数据 (从各组 Log 中提取)
+    # 这里的统计逻辑是读取我们在循环中生成的局部 summary
+    final_pass=0; final_fail=0; final_ns=0; final_total=0
     
-    for ((i=0; i<GROUP_COUNT; i++)); do
-        start_idx=$(( i * cases_per_group ))
-        [ "$start_idx" -ge "$actual_total" ] && break
-        
-        # 获取当前组的用例列表
-        CURRENT_GROUP_CASES=("${ALL_CASES[@]:$start_idx:$cases_per_group}")
-        group_size=${#CURRENT_GROUP_CASES[@]}
-        
-        local_txt="/tmp/group_${suite_name}_${i}.txt"
-        printf "%s\n" "${CURRENT_GROUP_CASES[@]}" > "$local_txt"
-        
-        # --- 第一次尝试 ---
-        echo "运行组 $i/$GROUP_COUNT (用例: $group_size)..."
-        sdb push "$local_txt" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
-        
-        run_cmd="su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/modules/${suite_name} && cat ${DEVICE_TEMP_DIR}/run.txt | ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/temp.qpa --deqp-surface-type=fbo'"
-        
-        output=$(sdb shell "$run_cmd" 2>&1)
-        
-        # 统计跑完的数量
-        g_run=$(echo "$output" | grep -E "Passed:|Failed:|Not supported:" | awk '{sum+=$NF} END {print sum+0}')
-
-        # --- 自动重跑逻辑 ---
-        if [ "$g_run" -lt "$group_size" ]; then
-            echo "  ⚠️ 检测到崩溃或中断 ($g_run/$group_size)。正在重跑剩余的 $((group_size - g_run)) 条用例..."
-            
-            # 提取剩余未跑的用例
-            retry_txt="/tmp/retry_${suite_name}_${i}.txt"
-            printf "%s\n" "${CURRENT_GROUP_CASES[@]:$g_run}" > "$retry_txt"
-            sdb push "$retry_txt" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
-            
-            # 执行重跑 (将结果追加到 qpa，注意：deqp默认会覆盖，这里我们生成独立的retry.qpa)
-            retry_output=$(sdb shell "$run_cmd" 2>&1)
-            
-            # 更新统计信息（简单合并两次运行的输出进行统计）
-            g_run_retry=$(echo "$retry_output" | grep -E "Passed:|Failed:|Not supported:" | awk '{sum+=$NF} END {print sum+0}')
-            echo "  ✅ 重跑完成，额外完成: $g_run_retry 条。"
-            
-            # 合并输出用于日志记录
-            output="${output}\n--- RETRY LOG ---\n${retry_output}"
-            
-            # 尝试拉取重跑后的 QPA
-            sdb pull "${DEVICE_QPA_DIR}/temp.qpa" "${RESULT_DIR}/qpa/${suite_name}_group_${i}_retry.qpa" >/dev/null 2>&1
-        else
-            sdb pull "${DEVICE_QPA_DIR}/temp.qpa" "${RESULT_DIR}/qpa/${suite_name}_group_${i}.qpa" >/dev/null 2>&1
-        fi
-
-        # 记录详细日志
-        echo -e "$output" >> "${RESULT_DIR}/logs/${suite_name}_group_${i}.log"
-        rm -f "$local_txt" "$retry_txt" 2>/dev/null
+    # 简单解析日志中的 Passed/Failed 行进行汇总
+    mapfile -t logs < <(ls ${RESULT_DIR}/logs/${suite_name}_group_*.log 2>/dev/null)
+    for log in "${logs[@]}"; do
+        p=$(grep "Passed:" "$log" | awk '{sum+=$NF} END {print sum+0}')
+        f=$(grep "Failed:" "$log" | awk '{sum+=$NF} END {print sum+0}')
+        n=$(grep "Not supported:" "$log" | awk '{sum+=$NF} END {print sum+0}')
+        final_pass=$((final_pass + p))
+        final_fail=$((final_fail + f))
+        final_ns=$((final_ns + n))
     done
+    final_total=$((final_pass + final_fail + final_ns))
+    
+    # 计算通过率
+    if [ "$final_total" -gt 0 ]; then
+        final_rate=$(awk -v p=$final_pass -v t=$final_total 'BEGIN {printf "%.2f", (p/t)*100}')
+    else
+        final_rate="0.00"
+    fi
+
+    # 2. 将设备上的 QPA 文件转换为 CSV
+    # 注意：由于分成了多组运行，最稳妥的方法是逐个转换并合并 CSV
+    echo "正在将 ${suite_name} 的 QPA 转换为 CSV..."
+    
+    COMBINED_CSV="${SUITE_CSV_DIR}/${suite_name}_all_${TIMESTAMP}.csv"
+    > "$COMBINED_CSV"
+
+    # 拉取设备上可能残留的所有 QPA 并转换
+    # 逻辑：在设备上逐个转换，然后拉取到本地追加
+    for ((i=0; i<GROUP_COUNT; i++)); do
+        # 这里的路径需与你运行时的 --deqp-log-filename 一致
+        DEVICE_QPA="${DEVICE_QPA_DIR}/group_${i}.qpa"
+        DEVICE_CSV="${DEVICE_TEMP_DIR}/temp.csv"
+        
+        # 检查设备文件是否存在
+        check=$(sdb shell "ls $DEVICE_QPA 2>/dev/null")
+        if [ -n "$check" ]; then
+            # 调用转换工具
+            sdb shell "/usr/bin/VK-GL-CTS-1.4.5/executor/testlog-to-csv $DEVICE_QPA > $DEVICE_CSV"
+            # 拉取并追加到本地总表
+            sdb pull "$DEVICE_CSV" "/tmp/current_group.csv" > /dev/null 2>&1
+            if [ -f "/tmp/current_group.csv" ]; then
+                # 如果是第一个 CSV，保留表头；否则去掉表头追加
+                if [ ! -s "$COMBINED_CSV" ]; then
+                    cat "/tmp/current_group.csv" >> "$COMBINED_CSV"
+                else
+                    sed '1d' "/tmp/current_group.csv" >> "$COMBINED_CSV"
+                fi
+                rm "/tmp/current_group.csv"
+            fi
+        fi
+    done
+
+    # 3. 打印摘要报告
+    {
+        echo "========================================"
+        echo "Tizen CTS 测试摘要: ${suite_name}"
+        echo "========================================"
+        echo "完成时间: $(date)"
+        echo "总测试用例数: ${SUITE_TOTAL_CASES[$suite_name]}"
+        echo "实际运行总数: $final_total"
+        echo "----------------------------------------"
+        echo "Passed:        $final_pass"
+        echo "Failed:        $final_fail"
+        echo "Not Supported: $final_ns"
+        echo "通过率:        $final_rate%"
+        echo "----------------------------------------"
+        echo "结果文件:"
+        echo "CSV 报告: $COMBINED_CSV"
+        echo "日志目录: ${RESULT_DIR}/logs/"
+        echo "========================================"
+    } | tee "$FINAL_SUMMARY"
+
 done
+
+# 清理设备临时文件
+sdb shell "rm -rf ${DEVICE_TEMP_DIR}/*.txt ${DEVICE_TEMP_DIR}/*.csv ${DEVICE_QPA_DIR}/*.qpa"
+
+echo "测试任务全部结束。"
