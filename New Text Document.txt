@@ -1,21 +1,23 @@
 #!/bin/bash
 
 # ============================================
-# Tizen OpenGL/EGL CTS Test Runner Script
-# Features: auto-retry on crash, CSV-based results
+# Optimized Tizen OpenGL/EGL CTS Runner (V2)
+# Features: On-device Merge, Auto-Resume, High Efficiency
 # ============================================
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-RESULT_DIR="${SCRIPT_DIR}/test_results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RESULT_DIR="${SCRIPT_DIR}/results_${TIMESTAMP}"
 
+# 基础目录创建
 mkdir -p "${RESULT_DIR}/qpa" "${RESULT_DIR}/csv" "${RESULT_DIR}/logs"
 
-# Configuration
+# 配置参数
 WAYLAND_DISPLAY="wayland-0"
-GROUP_COUNT=50
+BATCH_SIZE=200            # 每个批次运行的用例数
 DEVICE_TEMP_DIR="/tmp/cts_temp"
 DEVICE_QPA_DIR="/opt/media/USBDriveA1"
+EXECUTOR_PATH="/usr/bin/VK-GL-CTS-1.4.5"
 
 TEST_SUITES=(
     "egl-main-2020-03-01.txt:deqp-egl:egl"
@@ -24,536 +26,163 @@ TEST_SUITES=(
     "gles31-main-2020-03-01.txt:deqp-gles31:gles31"
 )
 
-# Environment initialization
+# 初始化全局统计
+g_total_pass=0; g_total_fail=0; g_total_ns=0; g_total_all=0
+
+# ============================================
+# 辅助工具函数
+# ============================================
+
+# 在 PC 端分析拉取回来的 QPA 状态
+analyze_qpa_local() {
+    local qpa=$1
+    [ ! -f "$qpa" ] && echo "0 0 0" && return
+    awk -F'"' '/StatusCode=/ {
+        s=$2;
+        if(s=="Pass" || s=="QualityWarning") p++;
+        else if(s=="Fail" || s=="ResourceError" || s=="InternalError" || s=="Crash") f++;
+        else if(s=="NotSupported") n++;
+    } END { print p+0, f+0, n+0 }' "$qpa"
+}
+
+# 检查设备连接
+check_conn() {
+    sdb get-serialno >/dev/null 2>&1 || return 1
+}
+
+# ============================================
+# 主执行逻辑
+# ============================================
+
+# 初始化设备环境
 sdb shell "mkdir -p ${DEVICE_TEMP_DIR} ${DEVICE_QPA_DIR}"
-
-# Initialize global total statistics
-global_passed=0
-global_failed=0
-global_not_supported=0
-global_total=0
-
-# ============================================
-# Helper Functions
-# ============================================
-
-# Count StatusCode entries in a QPA file
-count_qpa_results() {
-    local qpa_file=$1
-    local count=0
-    if [ -f "$qpa_file" ] && [ -s "$qpa_file" ]; then
-        count=$(grep -c 'StatusCode=' "$qpa_file" 2>/dev/null || echo 0)
-        count=$(echo "$count" | grep -oE '[0-9]+' | head -1)
-        count=${count:-0}
-    fi
-    echo $count
-}
-
-# Run test on device, return output
-run_test_on_device() {
-    local suite_name=$1
-    local binary_name=$2
-    local caselist_file=$3
-    
-    sdb push "$caselist_file" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
-    
-    local run_cmd="su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/modules/${suite_name} && cat ${DEVICE_TEMP_DIR}/run.txt | ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/temp.qpa'"
-    
-    sdb shell "$run_cmd" 2>&1
-}
-
-# Pull QPA from device
-pull_qpa() {
-    local local_path=$1
-    sdb pull "${DEVICE_QPA_DIR}/temp.qpa" "$local_path" >/dev/null 2>&1
-}
-
-# Parse console output for test totals
-parse_console_totals() {
-    local output=$1
-    local passed=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Passed:" | awk '{print $2}' | awk -F'/' '{sum+=$1} END {print sum+0}')
-    local failed=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Failed:" | awk '{print $2}' | awk -F'/' '{sum+=$1} END {print sum+0}')
-    local not_supported=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Not supported:" | awk '{print $3}' | awk -F'/' '{sum+=$1} END {print sum+0}')
-    echo "$((passed + failed + not_supported))"
-}
-
-# Convert a single QPA file to CSV on device, return local CSV path
-convert_qpa_to_csv() {
-    local qpa_file=$1
-    local qpa_basename=$(basename "$qpa_file")
-    local device_qpa_path="${DEVICE_QPA_DIR}/${qpa_basename}"
-    local device_csv_path="${DEVICE_QPA_DIR}/${qpa_basename%.qpa}.csv"
-    
-    # Upload QPA to device
-    sdb push "$qpa_file" "$device_qpa_path" >/dev/null 2>&1
-    
-    # Convert to CSV on device
-    local csv_cmd="su -c 'cd /usr/bin/VK-GL-CTS-1.4.5/executor && ./testlog-to-csv ${device_qpa_path} > ${device_csv_path}'"
-    sdb shell "$csv_cmd" >/dev/null 2>&1
-    
-    # Pull CSV file
-    local temp_csv="/tmp/csv_${qpa_basename%.qpa}.csv"
-    sdb pull "$device_csv_path" "$temp_csv" >/dev/null 2>&1
-    
-    # Clean up on device
-    sdb shell "rm -f ${device_qpa_path} ${device_csv_path}" >/dev/null 2>&1
-    
-    echo "$temp_csv"
-}
-
-# ============================================
-# Main: Convert QPA files to CSV individually and merge
-# ============================================
-merge_and_convert_suite() {
-    local suite_name=$1
-    local qpa_dir="${RESULT_DIR}/qpa"
-    
-    local QPA_FILES=($(find "${qpa_dir}" -name "${suite_name}_*.qpa" ! -name "*_merged_*.qpa" ! -name "*.crashed" 2>/dev/null))
-    
-    if [ ${#QPA_FILES[@]} -eq 0 ]; then
-        echo "No QPA files found for suite ${suite_name}"
-        return 1
-    fi
-    
-    echo "Found ${#QPA_FILES[@]} QPA files for suite ${suite_name}"
-    
-    local NON_EMPTY_QPA_FILES=()
-    for qpa_file in "${QPA_FILES[@]}"; do
-        if [ -s "$qpa_file" ]; then
-            NON_EMPTY_QPA_FILES+=("$qpa_file")
-        fi
-    done
-    
-    if [ ${#NON_EMPTY_QPA_FILES[@]} -eq 0 ]; then
-        echo "No non-empty QPA files for suite ${suite_name}"
-        return 1
-    fi
-    
-    CSV_NAME="${suite_name}_$(date +%Y%m%d_%H%M%S).csv"
-    LOCAL_CSV_PATH="${RESULT_DIR}/csv/${CSV_NAME}"
-    local csv_count=0
-    local csv_failed=0
-    local total_csv_cases=0
-    
-    for qpa_file in "${NON_EMPTY_QPA_FILES[@]}"; do
-        local temp_csv=$(convert_qpa_to_csv "$qpa_file")
-        
-        if [ -f "$temp_csv" ] && [ -s "$temp_csv" ]; then
-            local csv_cases=$(awk 'END {print NR-1}' "$temp_csv")
-            
-            if [ $csv_count -eq 0 ]; then
-                cat "$temp_csv" >> "$LOCAL_CSV_PATH"
-            else
-                tail -n +2 "$temp_csv" >> "$LOCAL_CSV_PATH"
-            fi
-            csv_count=$((csv_count + 1))
-            total_csv_cases=$((total_csv_cases + csv_cases))
-        else
-            csv_failed=$((csv_failed + 1))
-            echo "  Warning: Failed to convert $(basename "$qpa_file")"
-        fi
-        
-        rm -f "$temp_csv" 2>/dev/null
-    done
-    
-    echo "Converted $csv_count QPA files to CSV ($csv_failed failed)"
-    echo "Total cases in CSV: $total_csv_cases"
-    
-    if [ -f "$LOCAL_CSV_PATH" ] && [ -s "$LOCAL_CSV_PATH" ]; then
-        local csv_lines=$(wc -l < "$LOCAL_CSV_PATH")
-        echo "CSV file: $LOCAL_CSV_PATH ($csv_lines lines)"
-    else
-        echo "CSV conversion failed - no output file"
-        return 1
-    fi
-    
-    return 0
-}
-
-# ============================================
-# Display suite report from CSV
-# ============================================
-display_suite_report() {
-    local suite_name=$1
-    local csv_file=$2
-    
-    if [ -z "$csv_file" ] || [ ! -f "$csv_file" ]; then
-        echo "No CSV file found for suite ${suite_name}"
-        return 1
-    fi
-    
-    local suite_passed=$(awk -F',' 'NR > 1 && ($2 == "Pass" || $2 == "QualityWarning") {count++} END {print count+0}' "$csv_file")
-    local suite_failed=$(awk -F',' 'NR > 1 && ($2 == "Fail" || $2 == "ResourceError" || $2 == "InternalError" || $2 == "Crash") {count++} END {print count+0}' "$csv_file")
-    local suite_not_supported=$(awk -F',' 'NR > 1 && $2 == "NotSupported" {count++} END {print count+0}' "$csv_file")
-    
-    local suite_total=$((suite_passed + suite_failed + suite_not_supported))
-    
-    echo ""
-    echo "==========================================="
-    echo "       Suite ${suite_name} Final Results"
-    echo "==========================================="
-    echo "Total test cases: $suite_total"
-    echo "Passed: $suite_passed"
-    echo "Failed: $suite_failed"
-    echo "Not supported: $suite_not_supported"
-    echo ""
-    echo "Pass rate: $(awk "BEGIN {printf \"%.2f\", ($suite_passed*100)/($suite_total==0?1:$suite_total)}")%"
-    echo "==========================================="
-    
-    global_passed=$((global_passed + suite_passed))
-    global_failed=$((global_failed + suite_failed))
-    global_not_supported=$((global_not_supported + suite_not_supported))
-    global_total=$((global_total + suite_total))
-    
-    return 0
-}
-
-# ============================================
-# Check device connection
-# ============================================
-check_device_connection() {
-    local max_retries=3
-    local retry=0
-    
-    while [ $retry -lt $max_retries ]; do
-        if sdb get-serialno >/dev/null 2>&1; then
-            echo "Device connected: $(sdb get-serialno 2>/dev/null)"
-            return 0
-        fi
-        retry=$((retry + 1))
-        echo "Warning: Device not connected, retrying ($retry/$max_retries)..."
-        sleep 2
-    done
-    
-    echo "Error: Cannot connect to device after $max_retries retries"
-    return 1
-}
-
-# ============================================
-# Main test execution loop
-# ============================================
+sdb shell "rm -f ${DEVICE_QPA_DIR}/*.qpa ${DEVICE_QPA_DIR}/*.csv"
 
 for suite_config in "${TEST_SUITES[@]}"; do
     IFS=':' read -r case_file binary_name suite_name <<< "$suite_config"
     CASE_PATH="${SCRIPT_DIR}/android/cts/main/${case_file}"
-    [ ! -f "$CASE_PATH" ] && continue
     
-    echo "Checking device connection for suite ${suite_name}..."
-    if ! check_device_connection; then
-        echo "Skipping suite ${suite_name} due to device connection failure"
-        continue
-    fi
+    [ ! -f "$CASE_PATH" ] && echo "Skip: $case_file not found" && continue
 
-    # Extract all valid test cases
-    if command -v powershell.exe >/dev/null 2>&1; then
-        mapfile -t ALL_CASES < <(powershell.exe -Command "Get-Content '$CASE_PATH' | Where-Object { \$_ -notmatch '^(#|\\s*\$)' }")
-    else
-        mapfile -t ALL_CASES < <(grep -vE '^(#|[[:space:]]*$)' "$CASE_PATH")
-    fi
-    actual_total=${#ALL_CASES[@]}
+    echo -e "\n\033[32m>>> Starting Suite: ${suite_name} <<<\033[0m"
     
-    suite_start_time=$(date +%s)
+    # 提取有效用例
+    grep -vE '^(#|[[:space:]]*$)' "$CASE_PATH" > "${RESULT_DIR}/current_suite.txt"
+    mapfile -t ALL_CASES < "${RESULT_DIR}/current_suite.txt"
+    total_cases=${#ALL_CASES[@]}
     
-    echo ""
-    echo "==========================================="
-    echo "--- Test Suite: ${suite_name} (Total: ${actual_total}) ---"
-    echo "==========================================="
-    
-    # Group calculation
-    cases_per_group=$(( (actual_total + GROUP_COUNT - 1) / GROUP_COUNT ))
-    
-    for ((i=0; i<GROUP_COUNT; i++)); do
-        start_idx=$(( i * cases_per_group ))
-        [ "$start_idx" -ge "$actual_total" ] && break
-        
-        CURRENT_GROUP_CASES=("${ALL_CASES[@]:$start_idx:$cases_per_group}")
-        group_size=${#CURRENT_GROUP_CASES[@]}
-        
-        local_txt="/tmp/group_${suite_name}_${i}.txt"
-        printf "%s\n" "${CURRENT_GROUP_CASES[@]}" > "$local_txt"
-        
-        echo "Running group $i/$GROUP_COUNT (Cases: $group_size)..."
-        
-        output=$(run_test_on_device "$suite_name" "$binary_name" "$local_txt")
-        
-        group_qpa="${RESULT_DIR}/qpa/${suite_name}_group_${i}.qpa"
-        pull_qpa "$group_qpa"
-        
-        g_run=$(parse_console_totals "$output")
-        qpa_run=$(count_qpa_results "$group_qpa")
-        actual_run=$((g_run > qpa_run ? g_run : qpa_run))
-        
-        echo "  Group test results (QPA=$qpa_run, console=$g_run):"
-        if [ $actual_run -gt 0 ]; then
-            g_pass=$(grep -c 'StatusCode="Pass"' "$group_qpa" 2>/dev/null || echo 0)
-            g_qw=$(grep -c 'StatusCode="QualityWarning"' "$group_qpa" 2>/dev/null || echo 0)
-            g_fail=$(grep -c 'StatusCode="Fail"' "$group_qpa" 2>/dev/null || echo 0)
-            g_ns=$(grep -c 'StatusCode="NotSupported"' "$group_qpa" 2>/dev/null || echo 0)
-            g_re=$(grep -c 'StatusCode="ResourceError"' "$group_qpa" 2>/dev/null || echo 0)
-            g_ie=$(grep -c 'StatusCode="InternalError"' "$group_qpa" 2>/dev/null || echo 0)
-            g_pass=$(echo "$g_pass" | grep -oE '[0-9]+' | head -1)
-            g_qw=$(echo "$g_qw" | grep -oE '[0-9]+' | head -1)
-            g_fail=$(echo "$g_fail" | grep -oE '[0-9]+' | head -1)
-            g_ns=$(echo "$g_ns" | grep -oE '[0-9]+' | head -1)
-            g_re=$(echo "$g_re" | grep -oE '[0-9]+' | head -1)
-            g_ie=$(echo "$g_ie" | grep -oE '[0-9]+' | head -1)
-            g_pass=${g_pass:-0}
-            g_qw=${g_qw:-0}
-            g_fail=${g_fail:-0}
-            g_ns=${g_ns:-0}
-            g_re=${g_re:-0}
-            g_ie=${g_ie:-0}
-            g_total=$((g_pass + g_qw + g_fail + g_ns + g_re + g_ie))
-            echo "    Total: $g_total"
-            echo "    Passed: $((g_pass + g_qw))"
-            echo "    Failed: $((g_fail + g_re + g_ie))"
-            echo "    Not supported: $g_ns"
-            if [ $g_total -gt 0 ]; then
-                pass_rate=$(awk "BEGIN {printf \"%.2f\", (($g_pass+$g_qw)*100)/$g_total}")
-                echo "    Pass rate: ${pass_rate}%"
-            fi
-        else
-            echo "    No test results"
-        fi
-        
-        # Auto-retry logic
-        if [ "$actual_run" -lt "$group_size" ]; then
-            remaining_count=$((group_size - actual_run))
-            echo "  ⚠️  Crash or interruption detected ($actual_run/$group_size). Retrying remaining $remaining_count cases..."
-            
-            remaining_cases=("${CURRENT_GROUP_CASES[@]:$actual_run}")
-            
-            retry_passed=0
-            retry_failed=0
-            retry_not_supported=0
-            qpa_idx=0
-            
-            if [ $remaining_count -le 100 ]; then
-                echo "  Running $remaining_count cases individually..."
-                for case in "${remaining_cases[@]}"; do
-                    echo "    Running individual case: $case"
-                    echo "$case" > "/tmp/individual_${suite_name}_${i}.txt"
-                    
-                    individual_output=$(run_test_on_device "$suite_name" "$binary_name" "/tmp/individual_${suite_name}_${i}.txt")
-                    
-                    individual_qpa_file="${RESULT_DIR}/qpa/${suite_name}_group_${i}_case_${qpa_idx}.qpa"
-                    pull_qpa "$individual_qpa_file"
-                    
-                    case_count=$(count_qpa_results "$individual_qpa_file")
-                    if [ "$case_count" -gt 0 ]; then
-                        c_pass=$(grep -c 'StatusCode="Pass"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_qw=$(grep -c 'StatusCode="QualityWarning"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_fail=$(grep -c 'StatusCode="Fail"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_ns=$(grep -c 'StatusCode="NotSupported"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_re=$(grep -c 'StatusCode="ResourceError"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_ie=$(grep -c 'StatusCode="InternalError"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                        c_pass=$(echo "$c_pass" | grep -oE '[0-9]+' | head -1)
-                        c_qw=$(echo "$c_qw" | grep -oE '[0-9]+' | head -1)
-                        c_fail=$(echo "$c_fail" | grep -oE '[0-9]+' | head -1)
-                        c_ns=$(echo "$c_ns" | grep -oE '[0-9]+' | head -1)
-                        c_re=$(echo "$c_re" | grep -oE '[0-9]+' | head -1)
-                        c_ie=$(echo "$c_ie" | grep -oE '[0-9]+' | head -1)
-                        c_pass=${c_pass:-0}
-                        c_qw=${c_qw:-0}
-                        c_fail=${c_fail:-0}
-                        c_ns=${c_ns:-0}
-                        c_re=${c_re:-0}
-                        c_ie=${c_ie:-0}
-                        retry_passed=$((retry_passed + c_pass + c_qw))
-                        retry_failed=$((retry_failed + c_fail + c_re + c_ie))
-                        retry_not_supported=$((retry_not_supported + c_ns))
-                    else
-                        echo "      ⚠️  Case crashed: $case"
-                        retry_failed=$((retry_failed + 1))
-                    fi
-                    
-                    rm -f "/tmp/individual_${suite_name}_${i}.txt" 2>/dev/null
-                    qpa_idx=$((qpa_idx + 1))
-                done
-            else
-                RETRY_BATCH_SIZE=100
-                num_sub_batches=$(( (remaining_count + RETRY_BATCH_SIZE - 1) / RETRY_BATCH_SIZE ))
-                echo "  Running $remaining_count cases in $num_sub_batches sub-batches (size=$RETRY_BATCH_SIZE)..."
-                
-                for ((b=0; b<num_sub_batches; b++)); do
-                    batch_start=$(( b * RETRY_BATCH_SIZE ))
-                    batch_cases=("${remaining_cases[@]:$batch_start:$RETRY_BATCH_SIZE}")
-                    batch_size=${#batch_cases[@]}
-                    
-                    echo "    Running sub-batch $((b+1))/$num_sub_batches ($batch_size cases)..."
-                    
-                    batch_txt="/tmp/retry_batch_${suite_name}_${i}_${b}.txt"
-                    printf "%s\n" "${batch_cases[@]}" > "$batch_txt"
-                    
-                    batch_output=$(run_test_on_device "$suite_name" "$binary_name" "$batch_txt")
-                    
-                    batch_qpa="${RESULT_DIR}/qpa/${suite_name}_group_${i}_retry_${qpa_idx}.qpa"
-                    pull_qpa "$batch_qpa"
-                    qpa_idx=$((qpa_idx + 1))
-                    
-                    rm -f "$batch_txt" 2>/dev/null
-                    
-                    batch_qpa_count=$(count_qpa_results "$batch_qpa")
-                    batch_console_run=$(parse_console_totals "$batch_output")
-                    batch_actual=$((batch_console_run > batch_qpa_count ? batch_console_run : batch_qpa_count))
-                    
-                    if [ "$batch_actual" -lt "$batch_size" ]; then
-                        echo "    ⚠️  Sub-batch crashed ($batch_actual/$batch_size). Running all $batch_size cases individually..."
-                        mv "$batch_qpa" "${batch_qpa}.crashed" 2>/dev/null
-                        
-                        for case in "${batch_cases[@]}"; do
-                            echo "      Running individual case: $case"
-                            echo "$case" > "/tmp/individual_${suite_name}_${i}_${b}.txt"
-                            
-                            individual_output=$(run_test_on_device "$suite_name" "$binary_name" "/tmp/individual_${suite_name}_${i}_${b}.txt")
-                            
-                            individual_qpa_file="${RESULT_DIR}/qpa/${suite_name}_group_${i}_case_${qpa_idx}.qpa"
-                            pull_qpa "$individual_qpa_file"
-                            
-                            case_count=$(count_qpa_results "$individual_qpa_file")
-                            if [ "$case_count" -gt 0 ]; then
-                                c_pass=$(grep -c 'StatusCode="Pass"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_qw=$(grep -c 'StatusCode="QualityWarning"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_fail=$(grep -c 'StatusCode="Fail"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_ns=$(grep -c 'StatusCode="NotSupported"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_re=$(grep -c 'StatusCode="ResourceError"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_ie=$(grep -c 'StatusCode="InternalError"' "$individual_qpa_file" 2>/dev/null || echo 0)
-                                c_pass=$(echo "$c_pass" | grep -oE '[0-9]+' | head -1)
-                                c_qw=$(echo "$c_qw" | grep -oE '[0-9]+' | head -1)
-                                c_fail=$(echo "$c_fail" | grep -oE '[0-9]+' | head -1)
-                                c_ns=$(echo "$c_ns" | grep -oE '[0-9]+' | head -1)
-                                c_re=$(echo "$c_re" | grep -oE '[0-9]+' | head -1)
-                                c_ie=$(echo "$c_ie" | grep -oE '[0-9]+' | head -1)
-                                c_pass=${c_pass:-0}
-                                c_qw=${c_qw:-0}
-                                c_fail=${c_fail:-0}
-                                c_ns=${c_ns:-0}
-                                c_re=${c_re:-0}
-                                c_ie=${c_ie:-0}
-                                retry_passed=$((retry_passed + c_pass + c_qw))
-                                retry_failed=$((retry_failed + c_fail + c_re + c_ie))
-                                retry_not_supported=$((retry_not_supported + c_ns))
-                            else
-                                echo "        ⚠️  Case crashed: $case"
-                                retry_failed=$((retry_failed + 1))
-                            fi
-                            
-                            rm -f "/tmp/individual_${suite_name}_${i}_${b}.txt" 2>/dev/null
-                            qpa_idx=$((qpa_idx + 1))
-                        done
-                    else
-                        if [ -f "$batch_qpa" ] && [ -s "$batch_qpa" ]; then
-                            bp2=$(grep -c 'StatusCode="Pass"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bqw=$(grep -c 'StatusCode="QualityWarning"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bf2=$(grep -c 'StatusCode="Fail"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bns2=$(grep -c 'StatusCode="NotSupported"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bre=$(grep -c 'StatusCode="ResourceError"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bie=$(grep -c 'StatusCode="InternalError"' "$batch_qpa" 2>/dev/null || echo 0)
-                            bp2=$(echo "$bp2" | grep -oE '[0-9]+' | head -1)
-                            bqw=$(echo "$bqw" | grep -oE '[0-9]+' | head -1)
-                            bf2=$(echo "$bf2" | grep -oE '[0-9]+' | head -1)
-                            bns2=$(echo "$bns2" | grep -oE '[0-9]+' | head -1)
-                            bre=$(echo "$bre" | grep -oE '[0-9]+' | head -1)
-                            bie=$(echo "$bie" | grep -oE '[0-9]+' | head -1)
-                            bp2=${bp2:-0}
-                            bqw=${bqw:-0}
-                            bf2=${bf2:-0}
-                            bns2=${bns2:-0}
-                            bre=${bre:-0}
-                            bie=${bie:-0}
-                            retry_passed=$((retry_passed + bp2 + bqw))
-                            retry_failed=$((retry_failed + bf2 + bre + bie))
-                            retry_not_supported=$((retry_not_supported + bns2))
-                            echo "    ✅ Sub-batch completed ($batch_actual/$batch_size): Pass=$((bp2+bqw)), Fail=$((bf2+bre+bie)), N/S=$bns2"
-                        else
-                            echo "    ✅ Sub-batch completed ($batch_actual/$batch_size)"
-                        fi
-                    fi
-                done
-            fi
-            
-            retry_total=$((retry_passed + retry_failed + retry_not_supported))
-            echo "  ✅ Retry completed for $retry_total cases."
-            echo "  Group test results after retry:"
-            if [ $retry_total -gt 0 ]; then
-                echo "    Total: $retry_total"
-                echo "    Passed: $retry_passed"
-                echo "    Failed: $retry_failed"
-                echo "    Not supported: $retry_not_supported"
-                echo "    Pass rate: $(awk "BEGIN {printf \"%.2f\", ($retry_passed*100)/$retry_total}")%"
-            else
-                echo "    No test results"
-            fi
-        else
-            echo "  ✅ Group completed successfully ($actual_run/$group_size)"
-        fi
+    current_idx=0
+    group_id=0
+    suite_start=$(date +%s)
 
-        echo -e "$output" >> "${RESULT_DIR}/logs/${suite_name}_group_${i}.log"
-        rm -f "$local_txt" 2>/dev/null
+    # --- 1. 测试执行循环 ---
+    while [ $current_idx -lt $total_cases ]; do
+        remaining=$((total_cases - current_idx))
+        actual_batch=$(( remaining < BATCH_SIZE ? remaining : BATCH_SIZE ))
         
-        if [ $i -lt $((GROUP_COUNT - 1)) ]; then
-            sleep 3
+        batch_file="${RESULT_DIR}/logs/batch_${suite_name}_g${group_id}.txt"
+        printf "%s\n" "${ALL_CASES[@]:$current_idx:$actual_batch}" > "$batch_file"
+        
+        sdb push "$batch_file" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
+        
+        qpa_name="${suite_name}_g${group_id}.qpa"
+        echo "Running ${suite_name} | Batch $group_id | Index $current_idx/$total_cases..."
+        
+        # 核心命令：运行 CTS
+        sdb shell "export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd ${EXECUTOR_PATH}/modules/${suite_name} && ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/${qpa_name}" > /dev/null 2>&1
+        
+        # 局部拉取分析（仅为了检测 Crash 和实时进度报表）
+        local_qpa="${RESULT_DIR}/qpa/${qpa_name}"
+        sdb pull "${DEVICE_QPA_DIR}/${qpa_name}" "$local_qpa" > /dev/null 2>&1
+        
+        read p f n < <(analyze_qpa_local "$local_qpa")
+        run_count=$((p + f + n))
+
+        if [ $run_count -lt $actual_batch ]; then
+            # 发生 Crash：跳过崩溃点，从下一个开始
+            echo -e "\033[31m  ⚠️  Crash detected at index $((current_idx + run_count)). Resuming...\033[0m"
+            current_idx=$((current_idx + run_count + 1))
+        else
+            current_idx=$((current_idx + actual_batch))
         fi
+        group_id=$((group_id + 1))
     done
+
+    # --- 2. 设备端 CSV 转换与合并 ---
+    echo "Processing CSV conversion on device..."
+    dev_csv="${DEVICE_QPA_DIR}/${suite_name}_final.csv"
     
-    echo ""
-    echo "==========================================="
-    echo "  Converting QPA files to CSV for suite ${suite_name}"
-    echo "==========================================="
-    
-    merge_and_convert_suite "$suite_name"
-    
-    SUITE_CSV_FILE=$(ls -t "${RESULT_DIR}/csv/${suite_name}_"*.csv 2>/dev/null | head -n 1)
-    
-    # Add crashed cases directly to CSV
-    if [ -f "$SUITE_CSV_FILE" ]; then
-        csv_total=$(awk -F',' 'NR > 1 {count++} END {print count+0}' "$SUITE_CSV_FILE")
-        if [ "$csv_total" -lt "$actual_total" ]; then
-            missing=$((actual_total - csv_total))
-            echo "⚠️  CSV has $csv_total cases, expected $actual_total. Adding $missing crashed cases..."
-            
-            declare -A csv_cases
-            while IFS=',' read -r case_name status; do
-                csv_cases["$case_name"]=1
-            done < <(awk -F',' 'NR > 1 {print $1}' "$SUITE_CSV_FILE")
-            
-            added=0
-            for case in "${ALL_CASES[@]}"; do
-                if [ -z "${csv_cases[$case]}" ]; then
-                    echo "${case},Fail" >> "$SUITE_CSV_FILE"
-                    added=$((added + 1))
+    # 构建设备端执行脚本：合并所有 QPA 并转为单个 CSV
+    # 第一个文件保留表头，后续文件 tail -n +2 去除表头
+    convert_cmd="
+        first=1
+        echo 'CaseName,Result' > $dev_csv
+        for qpa in ${DEVICE_QPA_DIR}/${suite_name}_g*.qpa; do
+            if [ -f \"\$qpa\" ]; then
+                if [ \$first -eq 1 ]; then
+                    ${EXECUTOR_PATH}/executor/testlog-to-csv \$qpa >> $dev_csv
+                    first=0
+                else
+                    ${EXECUTOR_PATH}/executor/testlog-to-csv \$qpa | tail -n +2 >> $dev_csv
                 fi
-            done
-            unset csv_cases
-            echo "Added $added crashed cases to CSV"
-        fi
+            fi
+        done
+    "
+    sdb shell "su -c '$convert_cmd'"
+    
+    # 拉取最终 CSV
+    local_csv="${RESULT_DIR}/csv/${suite_name}_final.csv"
+    sdb pull "$dev_csv" "$local_csv" > /dev/null 2>&1
+
+    # --- 3. 崩溃补偿：补齐缺失记录 ---
+    csv_count=$(awk -F',' 'NR>1{c++}END{print c+0}' "$local_csv")
+    if [ "$csv_count" -lt "$total_cases" ]; then
+        echo "Patching $((total_cases - csv_count)) missing cases as Fail..."
+        declare -A recorded
+        while IFS=',' read -r name res; do recorded["$name"]=1; done < <(awk -F',' 'NR>1{print $1}' "$local_csv")
+        for ((i=0; i<total_cases; i++)); do
+            case_name="${ALL_CASES[$i]}"
+            if [ -z "${recorded[$case_name]}" ]; then
+                echo "${case_name},Fail" >> "$local_csv"
+            fi
+        done
+        unset recorded
     fi
+
+    # --- 4. 统计 Suite 报告 ---
+    read sp sf sn < <(analyze_qpa_local "$local_csv") # 借用逻辑统计 CSV 里的状态
+    # 重新从 CSV 统计更准确
+    sp=$(awk -F',' '$2=="Pass"||$2=="QualityWarning"{c++}END{print c+0}' "$local_csv")
+    sf=$(awk -F',' '$2=="Fail"||$2=="ResourceError"||$2=="InternalError"||$2=="Crash"{c++}END{print c+0}' "$local_csv")
+    sn=$(awk -F',' '$2=="NotSupported"{c++}END{print c+0}' "$local_csv")
     
-    display_suite_report "$suite_name" "$SUITE_CSV_FILE"
-    
-    suite_end_time=$(date +%s)
-    suite_duration=$((suite_end_time - suite_start_time))
-    suite_hours=$((suite_duration / 3600))
-    suite_mins=$(( (suite_duration % 3600) / 60 ))
-    suite_secs=$((suite_duration % 60))
-    echo "Suite ${suite_name} duration: ${suite_hours}h ${suite_mins}m ${suite_secs}s"
-    
-    echo "Cleaning up temporary files on device for suite ${suite_name}..."
-    sdb shell "rm -f ${DEVICE_QPA_DIR}/temp.qpa" >/dev/null 2>&1
-    sdb shell "rm -f ${DEVICE_QPA_DIR}/${suite_name}_*.qpa" >/dev/null 2>&1
-    sleep 5
+    suite_end=$(date +%s)
+    echo "-------------------------------------------"
+    echo "Suite ${suite_name} Done | Time: $((suite_end-suite_start))s"
+    echo "Pass: $sp | Fail: $sf | NotSupported: $sn | Total: $total_cases"
+    echo "-------------------------------------------"
+
+    g_total_pass=$((g_total_pass + sp))
+    g_total_fail=$((g_total_fail + sf))
+    g_total_ns=$((g_total_ns + sn))
+    g_total_all=$((g_total_all + total_cases))
+
+    # 清理设备端该 Suite 的 QPA
+    sdb shell "rm -f ${DEVICE_QPA_DIR}/${suite_name}_g*.qpa ${dev_csv}"
 done
 
-echo ""
+# ============================================
+# 最终汇总报告
+# ============================================
+echo -e "\n\033[33m==========================================="
+echo "         FINAL TEST SUMMARY"
 echo "==========================================="
-echo "           Test Execution Summary"
-echo "==========================================="
-echo "Total test cases: $global_total"
-echo "Passed: $global_passed"
-echo "Failed: $global_failed"
-echo "Not supported: $global_not_supported"
-echo ""
-echo "Pass rate: $(awk "BEGIN {printf \"%.2f\", ($global_passed*100)/($global_total==0?1:$global_total)}")%"
-echo "==========================================="
-
-echo ""
+echo "TOTAL CASES:   $g_total_all"
+echo "PASSED:        $g_total_pass"
+echo "FAILED:        $g_total_fail"
+echo "NOT SUPPORTED: $g_total_ns"
+if [ $g_total_all -gt 0 ]; then
+    rate=$(awk "BEGIN {printf \"%.2f\", ($g_total_pass*100)/$g_total_all}")
+    echo "TOTAL PASS RATE: ${rate}%"
+fi
+echo -e "===========================================\033[0m\n"
