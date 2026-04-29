@@ -1,20 +1,18 @@
 #!/bin/bash
 
 # ============================================
-# Optimized Tizen OpenGL/EGL CTS Runner (V2)
-# Features: On-device Merge, Auto-Resume, High Efficiency
+# Tizen CTS Runner - Stable & Automated Version
 # ============================================
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_DIR="${SCRIPT_DIR}/results_${TIMESTAMP}"
 
-# 基础目录创建
 mkdir -p "${RESULT_DIR}/qpa" "${RESULT_DIR}/csv" "${RESULT_DIR}/logs"
 
-# 配置参数
+# 配置
 WAYLAND_DISPLAY="wayland-0"
-BATCH_SIZE=200            # 每个批次运行的用例数
+BATCH_SIZE=200
 DEVICE_TEMP_DIR="/tmp/cts_temp"
 DEVICE_QPA_DIR="/opt/media/USBDriveA1"
 EXECUTOR_PATH="/usr/bin/VK-GL-CTS-1.4.5"
@@ -26,14 +24,8 @@ TEST_SUITES=(
     "gles31-main-2020-03-01.txt:deqp-gles31:gles31"
 )
 
-# 初始化全局统计
 g_total_pass=0; g_total_fail=0; g_total_ns=0; g_total_all=0
 
-# ============================================
-# 辅助工具函数
-# ============================================
-
-# 在 PC 端分析拉取回来的 QPA 状态
 analyze_qpa_local() {
     local qpa=$1
     [ ! -f "$qpa" ] && echo "0 0 0" && return
@@ -45,37 +37,23 @@ analyze_qpa_local() {
     } END { print p+0, f+0, n+0 }' "$qpa"
 }
 
-# 检查设备连接
-check_conn() {
-    sdb get-serialno >/dev/null 2>&1 || return 1
-}
-
-# ============================================
-# 主执行逻辑
-# ============================================
-
-# 初始化设备环境
+# 环境清理
 sdb shell "mkdir -p ${DEVICE_TEMP_DIR} ${DEVICE_QPA_DIR}"
 sdb shell "rm -f ${DEVICE_QPA_DIR}/*.qpa ${DEVICE_QPA_DIR}/*.csv"
 
 for suite_config in "${TEST_SUITES[@]}"; do
     IFS=':' read -r case_file binary_name suite_name <<< "$suite_config"
     CASE_PATH="${SCRIPT_DIR}/android/cts/main/${case_file}"
-    
-    [ ! -f "$CASE_PATH" ] && echo "Skip: $case_file not found" && continue
+    [ ! -f "$CASE_PATH" ] && continue
 
     echo -e "\n\033[32m>>> Starting Suite: ${suite_name} <<<\033[0m"
-    
-    # 提取有效用例
     grep -vE '^(#|[[:space:]]*$)' "$CASE_PATH" > "${RESULT_DIR}/current_suite.txt"
     mapfile -t ALL_CASES < "${RESULT_DIR}/current_suite.txt"
     total_cases=${#ALL_CASES[@]}
     
     current_idx=0
     group_id=0
-    suite_start=$(date +%s)
 
-    # --- 1. 测试执行循环 ---
     while [ $current_idx -lt $total_cases ]; do
         remaining=$((total_cases - current_idx))
         actual_batch=$(( remaining < BATCH_SIZE ? remaining : BATCH_SIZE ))
@@ -83,15 +61,19 @@ for suite_config in "${TEST_SUITES[@]}"; do
         batch_file="${RESULT_DIR}/logs/batch_${suite_name}_g${group_id}.txt"
         printf "%s\n" "${ALL_CASES[@]:$current_idx:$actual_batch}" > "$batch_file"
         
+        # 推送用例
         sdb push "$batch_file" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
         
         qpa_name="${suite_name}_g${group_id}.qpa"
-        echo "Running ${suite_name} | Batch $group_id | Index $current_idx/$total_cases..."
+        echo "Running Batch $group_id ($current_idx/$total_cases)..."
         
-        # 核心命令：运行 CTS
-        sdb shell "export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd ${EXECUTOR_PATH}/modules/${suite_name} && ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/${qpa_name}" > /dev/null 2>&1
+        # --- 关键修复：使用 -n 和重定向 < /dev/null 防止阻塞 ---
+        # 同时将 cat 用例文件的工作放在设备端 shell 内部，确保 stdin 链条完整
+        sdb shell -n "export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && \
+              cd ${EXECUTOR_PATH}/modules/${suite_name} && \
+              cat ${DEVICE_TEMP_DIR}/run.txt | ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/${qpa_name}" < /dev/null > /dev/null 2>&1
         
-        # 局部拉取分析（仅为了检测 Crash 和实时进度报表）
+        # 拉取并分析以检测 Crash
         local_qpa="${RESULT_DIR}/qpa/${qpa_name}"
         sdb pull "${DEVICE_QPA_DIR}/${qpa_name}" "$local_qpa" > /dev/null 2>&1
         
@@ -99,21 +81,22 @@ for suite_config in "${TEST_SUITES[@]}"; do
         run_count=$((p + f + n))
 
         if [ $run_count -lt $actual_batch ]; then
-            # 发生 Crash：跳过崩溃点，从下一个开始
-            echo -e "\033[31m  ⚠️  Crash detected at index $((current_idx + run_count)). Resuming...\033[0m"
+            echo -e "\033[31m  Crash detected! Skipped index $((current_idx + run_count))\033[0m"
             current_idx=$((current_idx + run_count + 1))
         else
             current_idx=$((current_idx + actual_batch))
         fi
         group_id=$((group_id + 1))
+        
+        # 即使没有回车也给系统一点呼吸时间，防止 SDB 并发竞争
+        sleep 1
     done
 
-    # --- 2. 设备端 CSV 转换与合并 ---
-    echo "Processing CSV conversion on device..."
+    # 设备端批量转换 CSV
+    echo "Merging QPA results to CSV on device..."
     dev_csv="${DEVICE_QPA_DIR}/${suite_name}_final.csv"
     
-    # 构建设备端执行脚本：合并所有 QPA 并转为单个 CSV
-    # 第一个文件保留表头，后续文件 tail -n +2 去除表头
+    # 这里的 su -c 内部也要注意重定向
     convert_cmd="
         first=1
         echo 'CaseName,Result' > $dev_csv
@@ -128,61 +111,27 @@ for suite_config in "${TEST_SUITES[@]}"; do
             fi
         done
     "
-    sdb shell "su -c '$convert_cmd'"
-    
-    # 拉取最终 CSV
+    sdb shell -n "su -c '$convert_cmd'" < /dev/null
+
     local_csv="${RESULT_DIR}/csv/${suite_name}_final.csv"
     sdb pull "$dev_csv" "$local_csv" > /dev/null 2>&1
 
-    # --- 3. 崩溃补偿：补齐缺失记录 ---
-    csv_count=$(awk -F',' 'NR>1{c++}END{print c+0}' "$local_csv")
-    if [ "$csv_count" -lt "$total_cases" ]; then
-        echo "Patching $((total_cases - csv_count)) missing cases as Fail..."
-        declare -A recorded
-        while IFS=',' read -r name res; do recorded["$name"]=1; done < <(awk -F',' 'NR>1{print $1}' "$local_csv")
-        for ((i=0; i<total_cases; i++)); do
-            case_name="${ALL_CASES[$i]}"
-            if [ -z "${recorded[$case_name]}" ]; then
-                echo "${case_name},Fail" >> "$local_csv"
-            fi
-        done
-        unset recorded
-    fi
-
-    # --- 4. 统计 Suite 报告 ---
-    read sp sf sn < <(analyze_qpa_local "$local_csv") # 借用逻辑统计 CSV 里的状态
-    # 重新从 CSV 统计更准确
+    # 统计并报告
     sp=$(awk -F',' '$2=="Pass"||$2=="QualityWarning"{c++}END{print c+0}' "$local_csv")
     sf=$(awk -F',' '$2=="Fail"||$2=="ResourceError"||$2=="InternalError"||$2=="Crash"{c++}END{print c+0}' "$local_csv")
     sn=$(awk -F',' '$2=="NotSupported"{c++}END{print c+0}' "$local_csv")
     
-    suite_end=$(date +%s)
     echo "-------------------------------------------"
-    echo "Suite ${suite_name} Done | Time: $((suite_end-suite_start))s"
-    echo "Pass: $sp | Fail: $sf | NotSupported: $sn | Total: $total_cases"
+    echo "Suite ${suite_name} : Pass $sp, Fail $sf, Skip $sn"
     echo "-------------------------------------------"
 
-    g_total_pass=$((g_total_pass + sp))
-    g_total_fail=$((g_total_fail + sf))
-    g_total_ns=$((g_total_ns + sn))
-    g_total_all=$((g_total_all + total_cases))
+    g_total_pass=$((g_total_pass + sp)); g_total_fail=$((g_total_fail + sf))
+    g_total_ns=$((g_total_ns + sn)); g_total_all=$((g_total_all + total_cases))
 
-    # 清理设备端该 Suite 的 QPA
-    sdb shell "rm -f ${DEVICE_QPA_DIR}/${suite_name}_g*.qpa ${dev_csv}"
+    # 清理
+    sdb shell -n "rm -f ${DEVICE_QPA_DIR}/${suite_name}_g*.qpa ${dev_csv}" < /dev/null
 done
 
-# ============================================
-# 最终汇总报告
-# ============================================
-echo -e "\n\033[33m==========================================="
-echo "         FINAL TEST SUMMARY"
+echo -e "\n==========================================="
+echo "ALL DONE. Pass Rate: $(awk "BEGIN {printf \"%.2f\", ($g_total_pass*100)/($g_total_all+0.0001)}")%"
 echo "==========================================="
-echo "TOTAL CASES:   $g_total_all"
-echo "PASSED:        $g_total_pass"
-echo "FAILED:        $g_total_fail"
-echo "NOT SUPPORTED: $g_total_ns"
-if [ $g_total_all -gt 0 ]; then
-    rate=$(awk "BEGIN {printf \"%.2f\", ($g_total_pass*100)/$g_total_all}")
-    echo "TOTAL PASS RATE: ${rate}%"
-fi
-echo -e "===========================================\033[0m\n"
