@@ -1,736 +1,559 @@
 #!/bin/bash
 
 # ============================================
-# Tizen OpenGL/EGL CTS 测试运行脚本（简化版）
-# 支持运行多个测试套件，每个套件独立汇总
-# 生成QPA文件，生成summary报告
-# 使用 --deqp-stdin-caselist 参数分组运行测试用例，分成3组
+# Tizen OpenGL/EGL CTS Test Runner Script
+# Features: auto-retry on crash, CSV-based results
 # ============================================
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RESULT_DIR="${SCRIPT_DIR}/test_results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# 创建结果目录
-mkdir -p "${RESULT_DIR}/qpa"
-mkdir -p "${RESULT_DIR}/csv"
+mkdir -p "${RESULT_DIR}/qpa" "${RESULT_DIR}/csv" "${RESULT_DIR}/logs"
 
-# Wayland 显示配置
+# Configuration
 WAYLAND_DISPLAY="wayland-0"
-
-# 分组数量配置：将测试用例分成多少组运行
 GROUP_COUNT=50
+DEVICE_TEMP_DIR="/tmp/cts_temp"
+DEVICE_QPA_DIR="/opt/media/USBDriveA1"
 
-# 测试套件配置：数组包含(测试用例文件名, 测试可执行文件名)
-TEST_SUITES=(     
+TEST_SUITES=(
     "egl-main-2020-03-01.txt:deqp-egl:egl"
-    #"gles2-main-2020-03-01.txt:deqp-gles2:gles2"
-    #"gles3-main-2020-03-01.txt:deqp-gles3:gles3"
-    #"gles31-main-2020-03-01.txt:deqp-gles31:gles31"   
+    "gles2-main-2020-03-01.txt:deqp-gles2:gles2"
+    "gles3-main-2020-03-01.txt:deqp-gles3:gles3"
+    "gles31-main-2020-03-01.txt:deqp-gles31:gles31"
 )
 
-# 总体统计
-total_pass_count=0
-total_fail_count=0
-total_not_supported_count=0
-total_error_count=0
-total_test_num=0
+# Environment initialization
+sdb shell "mkdir -p ${DEVICE_TEMP_DIR} ${DEVICE_QPA_DIR}"
 
-echo "========================================"
-echo "OpenGL/EGL CTS 测试运行 (多套件)"
-echo "========================================"
-echo "开始时间: $(date)"
-echo "Wayland Display: ${WAYLAND_DISPLAY}"
-echo "========================================"
-echo ""
+# Initialize global total statistics
+global_passed=0
+global_failed=0
+global_not_supported=0
+global_total=0
 
-# 检查sdb
-echo "检查sdb连接..."
-if ! command -v sdb > /dev/null 2>&1; then
-    echo "错误: 未找到sdb命令"
-    exit 1
-fi
+# ============================================
+# Helper Functions
+# ============================================
 
-if ! sdb get-serialno > /dev/null 2>&1; then
-    echo "错误: 无法连接到设备"
-    exit 1
-fi
+# Count StatusCode entries in a QPA file
+count_qpa_results() {
+    local qpa_file=$1
+    local count=0
+    if [ -f "$qpa_file" ] && [ -s "$qpa_file" ]; then
+        count=$(grep -c 'StatusCode=' "$qpa_file" 2>/dev/null || echo 0)
+        count=$(echo "$count" | grep -oE '[0-9]+' | head -1)
+        count=${count:-0}
+    fi
+    echo $count
+}
 
-echo "已连接到设备: $(sdb get-serialno)"
-echo ""
+# Run test on device, return output
+run_test_on_device() {
+    local suite_name=$1
+    local binary_name=$2
+    local caselist_file=$3
+    
+    sdb push "$caselist_file" "${DEVICE_TEMP_DIR}/run.txt" > /dev/null
+    
+    local run_cmd="su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/modules/${suite_name} && cat ${DEVICE_TEMP_DIR}/run.txt | ./${binary_name} --deqp-stdin-caselist --deqp-log-filename=${DEVICE_QPA_DIR}/temp.qpa'"
+    
+    sdb shell "$run_cmd" 2>&1
+}
 
-# 检查设备上的 Wayland 显示
-echo "检查设备上的 Wayland 显示..."
-wayland_check=$(sdb shell "ls /run/user/\$(id -u)/ 2>/dev/null | grep wayland" 2>&1)
-if [ -n "$wayland_check" ]; then
-    echo "设备上可用的 Wayland 显示: ${wayland_check}"
-else
-    echo "警告: 未找到 Wayland 显示套接字"
-fi
+# Pull QPA from device
+pull_qpa() {
+    local local_path=$1
+    sdb pull "${DEVICE_QPA_DIR}/temp.qpa" "$local_path" >/dev/null 2>&1
+}
 
-# 检查设备上的基本环境
-echo "检查设备环境..."
-echo "设备系统信息:"
-sdb shell "uname -a" 2>&1 | head -3
-echo "设备用户ID: $(sdb shell "id -u" 2>/dev/null)"
-echo "设备XDG_RUNTIME_DIR内容:"
-sdb shell "ls -la /run/user/\$(id -u)/ 2>/dev/null" 2>&1 | head -10
-echo ""
+# Parse console output for test totals
+parse_console_totals() {
+    local output=$1
+    local passed=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Passed:" | awk '{print $2}' | awk -F'/' '{sum+=$1} END {print sum+0}')
+    local failed=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Failed:" | awk '{print $2}' | awk -F'/' '{sum+=$1} END {print sum+0}')
+    local not_supported=$(echo "$output" | grep -A 5 "Test run totals:" | grep "Not supported:" | awk '{print $3}' | awk -F'/' '{sum+=$1} END {print sum+0}')
+    echo "$((passed + failed + not_supported))"
+}
 
-start_time=$(date +%s)
+# Convert a single QPA file to CSV on device, return local CSV path
+convert_qpa_to_csv() {
+    local qpa_file=$1
+    local qpa_basename=$(basename "$qpa_file")
+    local device_qpa_path="${DEVICE_QPA_DIR}/${qpa_basename}"
+    local device_csv_path="${DEVICE_QPA_DIR}/${qpa_basename%.qpa}.csv"
+    
+    # Upload QPA to device
+    sdb push "$qpa_file" "$device_qpa_path" >/dev/null 2>&1
+    
+    # Convert to CSV on device
+    local csv_cmd="su -c 'cd /usr/bin/VK-GL-CTS-1.4.5/executor && ./testlog-to-csv ${device_qpa_path} > ${device_csv_path}'"
+    sdb shell "$csv_cmd" >/dev/null 2>&1
+    
+    # Pull CSV file
+    local temp_csv="/tmp/csv_${qpa_basename%.qpa}.csv"
+    sdb pull "$device_csv_path" "$temp_csv" >/dev/null 2>&1
+    
+    # Clean up on device
+    sdb shell "rm -f ${device_qpa_path} ${device_csv_path}" >/dev/null 2>&1
+    
+    echo "$temp_csv"
+}
 
-# 遍历每个测试套件
-for suite_config in "${TEST_SUITES[@]}"; do
-    IFS=':' read -r test_cases_file test_binary test_name <<< "$suite_config"
-
-    TEST_CASES_FILE="${SCRIPT_DIR}/android/cts/main/${test_cases_file}"
-    if [ -f "$TEST_CASES_FILE" ]; then
-        total_count=0
-        while IFS= read -r line; do
-            if [ -n "$line" ] && [[ ! "$line" == \#* ]]; then
-                total_count=$((total_count + 1))
+# ============================================
+# Main: Convert QPA files to CSV individually and merge
+# ============================================
+merge_and_convert_suite() {
+    local suite_name=$1
+    local qpa_dir="${RESULT_DIR}/qpa"
+    
+    local QPA_FILES=($(find "${qpa_dir}" -name "${suite_name}_*.qpa" ! -name "*_merged_*.qpa" ! -name "*.crashed" 2>/dev/null))
+    
+    if [ ${#QPA_FILES[@]} -eq 0 ]; then
+        echo "No QPA files found for suite ${suite_name}"
+        return 1
+    fi
+    
+    echo "Found ${#QPA_FILES[@]} QPA files for suite ${suite_name}"
+    
+    local NON_EMPTY_QPA_FILES=()
+    for qpa_file in "${QPA_FILES[@]}"; do
+        if [ -s "$qpa_file" ]; then
+            NON_EMPTY_QPA_FILES+=("$qpa_file")
+        fi
+    done
+    
+    if [ ${#NON_EMPTY_QPA_FILES[@]} -eq 0 ]; then
+        echo "No non-empty QPA files for suite ${suite_name}"
+        return 1
+    fi
+    
+    CSV_NAME="${suite_name}_$(date +%Y%m%d_%H%M%S).csv"
+    LOCAL_CSV_PATH="${RESULT_DIR}/csv/${CSV_NAME}"
+    local csv_count=0
+    local csv_failed=0
+    local total_csv_cases=0
+    
+    for qpa_file in "${NON_EMPTY_QPA_FILES[@]}"; do
+        local temp_csv=$(convert_qpa_to_csv "$qpa_file")
+        
+        if [ -f "$temp_csv" ] && [ -s "$temp_csv" ]; then
+            local csv_cases=$(awk 'END {print NR-1}' "$temp_csv")
+            
+            if [ $csv_count -eq 0 ]; then
+                cat "$temp_csv" >> "$LOCAL_CSV_PATH"
+            else
+                tail -n +2 "$temp_csv" >> "$LOCAL_CSV_PATH"
             fi
-        done < "${TEST_CASES_FILE}"
-        SUITE_TOTAL_CASES[$test_name]=$total_count
+            csv_count=$((csv_count + 1))
+            total_csv_cases=$((total_csv_cases + csv_cases))
+        else
+            csv_failed=$((csv_failed + 1))
+            echo "  Warning: Failed to convert $(basename "$qpa_file")"
+        fi
+        
+        rm -f "$temp_csv" 2>/dev/null
+    done
+    
+    echo "Converted $csv_count QPA files to CSV ($csv_failed failed)"
+    echo "Total cases in CSV: $total_csv_cases"
+    
+    if [ -f "$LOCAL_CSV_PATH" ] && [ -s "$LOCAL_CSV_PATH" ]; then
+        local csv_lines=$(wc -l < "$LOCAL_CSV_PATH")
+        echo "CSV file: $LOCAL_CSV_PATH ($csv_lines lines)"
     else
-        echo ""
+        echo "CSV conversion failed - no output file"
+        return 1
+    fi
+    
+    return 0
+}
+
+# ============================================
+# Display suite report from CSV
+# ============================================
+display_suite_report() {
+    local suite_name=$1
+    local csv_file=$2
+    
+    if [ -z "$csv_file" ] || [ ! -f "$csv_file" ]; then
+        echo "No CSV file found for suite ${suite_name}"
+        return 1
+    fi
+    
+    local suite_passed=$(awk -F',' 'NR > 1 && ($2 == "Pass" || $2 == "QualityWarning") {count++} END {print count+0}' "$csv_file")
+    local suite_failed=$(awk -F',' 'NR > 1 && ($2 == "Fail" || $2 == "ResourceError" || $2 == "InternalError" || $2 == "Crash") {count++} END {print count+0}' "$csv_file")
+    local suite_not_supported=$(awk -F',' 'NR > 1 && $2 == "NotSupported" {count++} END {print count+0}' "$csv_file")
+    
+    local suite_total=$((suite_passed + suite_failed + suite_not_supported))
+    
+    echo ""
+    echo "==========================================="
+    echo "       Suite ${suite_name} Final Results"
+    echo "==========================================="
+    echo "Total test cases: $suite_total"
+    echo "Passed: $suite_passed"
+    echo "Failed: $suite_failed"
+    echo "Not supported: $suite_not_supported"
+    echo ""
+    echo "Pass rate: $(awk "BEGIN {printf \"%.2f\", ($suite_passed*100)/($suite_total==0?1:$suite_total)}")%"
+    echo "==========================================="
+    
+    global_passed=$((global_passed + suite_passed))
+    global_failed=$((global_failed + suite_failed))
+    global_not_supported=$((global_not_supported + suite_not_supported))
+    global_total=$((global_total + suite_total))
+    
+    return 0
+}
+
+# ============================================
+# Check device connection
+# ============================================
+check_device_connection() {
+    local max_retries=3
+    local retry=0
+    
+    while [ $retry -lt $max_retries ]; do
+        if sdb get-serialno >/dev/null 2>&1; then
+            echo "Device connected: $(sdb get-serialno 2>/dev/null)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "Warning: Device not connected, retrying ($retry/$max_retries)..."
+        sleep 2
+    done
+    
+    echo "Error: Cannot connect to device after $max_retries retries"
+    return 1
+}
+
+# ============================================
+# Main test execution loop
+# ============================================
+
+for suite_config in "${TEST_SUITES[@]}"; do
+    IFS=':' read -r case_file binary_name suite_name <<< "$suite_config"
+    CASE_PATH="${SCRIPT_DIR}/android/cts/main/${case_file}"
+    [ ! -f "$CASE_PATH" ] && continue
+    
+    echo "Checking device connection for suite ${suite_name}..."
+    if ! check_device_connection; then
+        echo "Skipping suite ${suite_name} due to device connection failure"
         continue
     fi
 
-    # QPA文件路径
-    QPA_FILE="${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}.qpa"
-
-    # 每个套件的summary文件
-    SUITE_SUMMARY_FILE="${RESULT_DIR}/summary_${test_name}_${TIMESTAMP}.txt"
+    # Extract all valid test cases
+    if command -v powershell.exe >/dev/null 2>&1; then
+        mapfile -t ALL_CASES < <(powershell.exe -Command "Get-Content '$CASE_PATH' | Where-Object { \$_ -notmatch '^(#|\\s*\$)' }")
+    else
+        mapfile -t ALL_CASES < <(grep -vE '^(#|[[:space:]]*$)' "$CASE_PATH")
+    fi
+    actual_total=${#ALL_CASES[@]}
     
-
-    # 套件统计变量
-    pass_count=0
-    fail_count=0
-    not_supported_count=0
-    error_count=0
-    test_num=0
-
-    total_tests=$(wc -l < "${TEST_CASES_FILE}")
-
-    echo "========================================"
-    echo "测试套件: ${test_name}"
-    echo "========================================"
-    echo "开始时间: $(date)"
-    echo "总测试数量: ${SUITE_TOTAL_CASES[$test_name]}"
-    echo "实际运行测试数量: 0"
-    echo "========================================"
+    suite_start_time=$(date +%s)
+    
     echo ""
-
-    # 在每个测试套件运行前重新连接设备，防止设备断开
-    echo "重新连接设备..."
-    if ! sdb connect "$(sdb get-serialno)" > /dev/null 2>&1; then
-        echo "警告: 重新连接设备失败，尝试继续..."
-    else
-        echo "设备连接成功"
-    fi
-    echo ""
-
-    # 根据测试套件选择对应的模块目录
-    case "$test_name" in
-        "egl")
-            MODULE_DIR="modules/egl"
-            ;;
-        "gles2")
-            MODULE_DIR="modules/gles2"
-            ;;
-        "gles3")
-            MODULE_DIR="modules/gles3"
-            ;;
-        "gles31")
-            MODULE_DIR="modules/gles31"
-            ;;
-        *)
-            echo "未知测试套件: ${test_name}"
-            continue
-            ;;
-    esac
-
-    # 创建临时QPA文件
-    TEMP_QPA="/opt/media/USBDriveA1/${test_name}_${TIMESTAMP}.qpa"
-
-    # 收集所有测试用例到数组
-    test_cases=()
-    exec 3< "${TEST_CASES_FILE}"
-    while IFS= read -r line <&3 || [ -n "$line" ]; do
-        # 跳过空行和注释行
-        if [ -n "$line" ] && [[ ! "$line" == \#* ]]; then
-            test_cases+=("$line")
-        fi
-    done
-    exec 3<&-
-
-    # 使用分片文件的方式运行测试用例，确保所有测试用例都被包含
-    echo "总测试用例数 (从文件计算): ${total_tests}"
+    echo "==========================================="
+    echo "--- Test Suite: ${suite_name} (Total: ${actual_total}) ---"
+    echo "==========================================="
     
-    # 固定分成100组
-    total_groups=${GROUP_COUNT}
+    # Group calculation
+    cases_per_group=$(( (actual_total + GROUP_COUNT - 1) / GROUP_COUNT ))
     
-    echo "分组数: ${total_groups}"
-    
-    # 计算每组的测试用例数量
-    cases_per_group=$((total_tests / total_groups))
-    remainder=$((total_tests % total_groups))
-    
-    # 创建一个文件来记录未运行的测试用例
-    unrun_cases_file="/tmp/${test_name}_unrun_cases.txt"
-    > "${unrun_cases_file}"
-    
-    # 分组运行测试用例
-    for ((group_index=0; group_index<total_groups; group_index++)); do
-        echo "运行测试用例组 ${group_index}/${total_groups}"
+    for ((i=0; i<GROUP_COUNT; i++)); do
+        start_idx=$(( i * cases_per_group ))
+        [ "$start_idx" -ge "$actual_total" ] && break
         
-        # 计算当前组的起始和结束行号
-        start_line=$((group_index * cases_per_group + 1))
-        end_line=$((start_line + cases_per_group - 1))
+        CURRENT_GROUP_CASES=("${ALL_CASES[@]:$start_idx:$cases_per_group}")
+        group_size=${#CURRENT_GROUP_CASES[@]}
         
-        # 处理余数，将多余的测试用例分配给前面的组
-        if [ $group_index -lt $remainder ]; then
-            start_line=$((start_line + group_index))
-            end_line=$((end_line + group_index + 1))
+        local_txt="/tmp/group_${suite_name}_${i}.txt"
+        printf "%s\n" "${CURRENT_GROUP_CASES[@]}" > "$local_txt"
+        
+        echo "Running group $i/$GROUP_COUNT (Cases: $group_size)..."
+        
+        output=$(run_test_on_device "$suite_name" "$binary_name" "$local_txt")
+        
+        group_qpa="${RESULT_DIR}/qpa/${suite_name}_group_${i}.qpa"
+        pull_qpa "$group_qpa"
+        
+        g_run=$(parse_console_totals "$output")
+        qpa_run=$(count_qpa_results "$group_qpa")
+        actual_run=$((g_run > qpa_run ? g_run : qpa_run))
+        
+        echo "  Group test results (QPA=$qpa_run, console=$g_run):"
+        if [ $actual_run -gt 0 ]; then
+            g_pass=$(grep -c 'StatusCode="Pass"' "$group_qpa" 2>/dev/null || echo 0)
+            g_qw=$(grep -c 'StatusCode="QualityWarning"' "$group_qpa" 2>/dev/null || echo 0)
+            g_fail=$(grep -c 'StatusCode="Fail"' "$group_qpa" 2>/dev/null || echo 0)
+            g_ns=$(grep -c 'StatusCode="NotSupported"' "$group_qpa" 2>/dev/null || echo 0)
+            g_re=$(grep -c 'StatusCode="ResourceError"' "$group_qpa" 2>/dev/null || echo 0)
+            g_ie=$(grep -c 'StatusCode="InternalError"' "$group_qpa" 2>/dev/null || echo 0)
+            g_pass=$(echo "$g_pass" | grep -oE '[0-9]+' | head -1)
+            g_qw=$(echo "$g_qw" | grep -oE '[0-9]+' | head -1)
+            g_fail=$(echo "$g_fail" | grep -oE '[0-9]+' | head -1)
+            g_ns=$(echo "$g_ns" | grep -oE '[0-9]+' | head -1)
+            g_re=$(echo "$g_re" | grep -oE '[0-9]+' | head -1)
+            g_ie=$(echo "$g_ie" | grep -oE '[0-9]+' | head -1)
+            g_pass=${g_pass:-0}
+            g_qw=${g_qw:-0}
+            g_fail=${g_fail:-0}
+            g_ns=${g_ns:-0}
+            g_re=${g_re:-0}
+            g_ie=${g_ie:-0}
+            g_total=$((g_pass + g_qw + g_fail + g_ns + g_re + g_ie))
+            echo "    Total: $g_total"
+            echo "    Passed: $((g_pass + g_qw))"
+            echo "    Failed: $((g_fail + g_re + g_ie))"
+            echo "    Not supported: $g_ns"
+            if [ $g_total -gt 0 ]; then
+                pass_rate=$(awk "BEGIN {printf \"%.2f\", (($g_pass+$g_qw)*100)/$g_total}")
+                echo "    Pass rate: ${pass_rate}%"
+            fi
         else
-            start_line=$((start_line + remainder))
-            end_line=$((end_line + remainder))
+            echo "    No test results"
         fi
         
-        echo "运行测试组 ${group_index}/${total_groups}: 行${start_line}-${end_line}"
-        
-        # 创建当前组的测试用例文件
-        group_cases_file="/tmp/${test_name}_group_${group_index}.txt"
-        sed -n "${start_line},${end_line}p" "${TEST_CASES_FILE}" > "${group_cases_file}"
-        
-        # 将测试用例文件上传到设备
-        sdb push "${group_cases_file}" "/tmp/${test_name}_group_${group_index}.txt" > /dev/null 2>&1
-        
-        # 检查sdb连接
-        if ! sdb get-serialno > /dev/null 2>&1; then
-            echo "警告: sdb连接断开，尝试重连..."
-            sleep 2
-            if ! sdb get-serialno > /dev/null 2>&1; then
-                echo "错误: 无法重新连接设备，跳过此测试组"
-                error_count=$((error_count + 1))
-                # 清理临时文件
-                rm -f "${group_cases_file}" > /dev/null 2>&1
-                sdb shell "rm -f /tmp/${test_name}_group_${group_index}.txt" > /dev/null 2>&1
-                continue
-            fi
-            echo "sdb重连成功"
-        fi
-
-        # 通过sdb shell运行测试组，使用--deqp-stdin-caselist参数
-        # 使用su -c来确保以root权限运行
-        # 不显示详细的测试输出，只显示关键信息
-        echo "正在运行测试组 ${group_index}/${total_groups}..."
-        output=$(sdb shell "su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && cat /tmp/${test_name}_group_${group_index}.txt | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa'" 2>&1)
-        exit_code=$?
-
-        # 检查测试结果
-        # 从输出中提取统计信息
-        group_pass_count=$(echo "$output" | grep -o "Passed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
-        group_fail_count=$(echo "$output" | grep -o "Failed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
-        group_not_supported_count=$(echo "$output" | grep -o "Not supported: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
-        
-        # 计算实际运行的测试用例数量
-        group_total_count=$((group_pass_count + group_fail_count + group_not_supported_count))
-        
-        # 显示该组测试用例文件的信息，帮助诊断问题
-        group_line_count=$(wc -l < "${group_cases_file}")
-        echo "  诊断信息: 测试用例文件行数=$group_line_count, 实际运行=$group_total_count, 差异=$((group_line_count - group_total_count))"
-        
-        # 检查是否有测试用例出错导致退出
-        if [ $((group_line_count - group_total_count)) -gt 0 ]; then
-            echo "  警告: 有 $((group_line_count - group_total_count)) 个测试用例没有被运行"
-            # 增加调试日志：记录时间戳和组信息
-            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 有未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  [DEBUG] 期望运行: $group_line_count, 实际运行: $group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+        # Auto-retry logic
+        if [ "$actual_run" -lt "$group_size" ]; then
+            remaining_count=$((group_size - actual_run))
+            echo "  ⚠️  Crash or interruption detected ($actual_run/$group_size). Retrying remaining $remaining_count cases..."
             
-            # 检查输出中是否有错误信息
-            if echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
-                echo "  检测到错误信息:"
-                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5
-                # 记录错误信息到调试日志
-                echo "  [DEBUG] 检测到的错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            remaining_cases=("${CURRENT_GROUP_CASES[@]:$actual_run}")
+            
+            retry_passed=0
+            retry_failed=0
+            retry_not_supported=0
+            qpa_idx=0
+            
+            if [ $remaining_count -le 100 ]; then
+                echo "  Running $remaining_count cases individually..."
+                for case in "${remaining_cases[@]}"; do
+                    echo "    Running individual case: $case"
+                    echo "$case" > "/tmp/individual_${suite_name}_${i}.txt"
+                    
+                    individual_output=$(run_test_on_device "$suite_name" "$binary_name" "/tmp/individual_${suite_name}_${i}.txt")
+                    
+                    individual_qpa_file="${RESULT_DIR}/qpa/${suite_name}_group_${i}_case_${qpa_idx}.qpa"
+                    pull_qpa "$individual_qpa_file"
+                    
+                    case_count=$(count_qpa_results "$individual_qpa_file")
+                    if [ "$case_count" -gt 0 ]; then
+                        c_pass=$(grep -c 'StatusCode="Pass"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_qw=$(grep -c 'StatusCode="QualityWarning"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_fail=$(grep -c 'StatusCode="Fail"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_ns=$(grep -c 'StatusCode="NotSupported"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_re=$(grep -c 'StatusCode="ResourceError"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_ie=$(grep -c 'StatusCode="InternalError"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                        c_pass=$(echo "$c_pass" | grep -oE '[0-9]+' | head -1)
+                        c_qw=$(echo "$c_qw" | grep -oE '[0-9]+' | head -1)
+                        c_fail=$(echo "$c_fail" | grep -oE '[0-9]+' | head -1)
+                        c_ns=$(echo "$c_ns" | grep -oE '[0-9]+' | head -1)
+                        c_re=$(echo "$c_re" | grep -oE '[0-9]+' | head -1)
+                        c_ie=$(echo "$c_ie" | grep -oE '[0-9]+' | head -1)
+                        c_pass=${c_pass:-0}
+                        c_qw=${c_qw:-0}
+                        c_fail=${c_fail:-0}
+                        c_ns=${c_ns:-0}
+                        c_re=${c_re:-0}
+                        c_ie=${c_ie:-0}
+                        retry_passed=$((retry_passed + c_pass + c_qw))
+                        retry_failed=$((retry_failed + c_fail + c_re + c_ie))
+                        retry_not_supported=$((retry_not_supported + c_ns))
+                    else
+                        echo "      ⚠️  Case crashed: $case"
+                        retry_failed=$((retry_failed + 1))
+                    fi
+                    
+                    rm -f "/tmp/individual_${suite_name}_${i}.txt" 2>/dev/null
+                    qpa_idx=$((qpa_idx + 1))
+                done
             else
-                echo "  输出中没有包含 ERROR|FATAL|CRASH|ABORT 关键字"
-                echo "  [DEBUG] 输出中未检测到明显错误关键字" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            # 检查退出码
-            if [ $exit_code -ne 0 ]; then
-                echo "  测试程序退出码: $exit_code"
-                echo "  [DEBUG] 测试程序异常退出，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            else
-                echo "  测试程序退出码是0，表示正常退出"
-                echo "  [DEBUG] 测试程序正常退出，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            # 显示更多输出信息帮助诊断
-            echo "  测试程序输出摘要:"
-            echo "$output" | head -10
-            echo "  ..."
-            echo "$output" | tail -10
-            
-            # 记录输出摘要到调试日志
-            echo "  [DEBUG] 测试程序输出摘要:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "$output" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  ..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "$output" | tail -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            # 显示测试用例文件的前几行和后几行，帮助诊断
-            echo "  测试用例文件摘要:"
-            echo "  前5行:"
-            head -5 "${group_cases_file}"
-            echo "  后5行:"
-            tail -5 "${group_cases_file}"
-            
-            # 记录测试用例文件信息到调试日志
-            echo "  [DEBUG] 测试用例文件前5行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            head -5 "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  [DEBUG] 测试用例文件后5行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            tail -5 "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            # 如果有测试用例没有被运行，将它们记录到未运行的测试用例文件中
-            if [ $((group_line_count - group_total_count)) -gt 0 ]; then
-                echo "  记录未运行的测试用例..."
-                # 计算未运行的测试用例的起始行号
-                unrun_start_line=$((group_total_count + 1))
-                # 将未运行的测试用例追加到未运行的测试用例文件中
-                sed -n "${unrun_start_line},\$p" "${group_cases_file}" >> "${unrun_cases_file}"
-                echo "  已记录 $((group_line_count - group_total_count)) 个未运行的测试用例"
+                RETRY_BATCH_SIZE=100
+                num_sub_batches=$(( (remaining_count + RETRY_BATCH_SIZE - 1) / RETRY_BATCH_SIZE ))
+                echo "  Running $remaining_count cases in $num_sub_batches sub-batches (size=$RETRY_BATCH_SIZE)..."
                 
-                # 增加调试日志：记录未运行的测试用例列表
-                echo "  [DEBUG] 未运行的测试用例列表:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                sed -n "${unrun_start_line},\$p" "${group_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+                for ((b=0; b<num_sub_batches; b++)); do
+                    batch_start=$(( b * RETRY_BATCH_SIZE ))
+                    batch_cases=("${remaining_cases[@]:$batch_start:$RETRY_BATCH_SIZE}")
+                    batch_size=${#batch_cases[@]}
+                    
+                    echo "    Running sub-batch $((b+1))/$num_sub_batches ($batch_size cases)..."
+                    
+                    batch_txt="/tmp/retry_batch_${suite_name}_${i}_${b}.txt"
+                    printf "%s\n" "${batch_cases[@]}" > "$batch_txt"
+                    
+                    batch_output=$(run_test_on_device "$suite_name" "$binary_name" "$batch_txt")
+                    
+                    batch_qpa="${RESULT_DIR}/qpa/${suite_name}_group_${i}_retry_${qpa_idx}.qpa"
+                    pull_qpa "$batch_qpa"
+                    qpa_idx=$((qpa_idx + 1))
+                    
+                    rm -f "$batch_txt" 2>/dev/null
+                    
+                    batch_qpa_count=$(count_qpa_results "$batch_qpa")
+                    batch_console_run=$(parse_console_totals "$batch_output")
+                    batch_actual=$((batch_console_run > batch_qpa_count ? batch_console_run : batch_qpa_count))
+                    
+                    if [ "$batch_actual" -lt "$batch_size" ]; then
+                        echo "    ⚠️  Sub-batch crashed ($batch_actual/$batch_size). Running all $batch_size cases individually..."
+                        mv "$batch_qpa" "${batch_qpa}.crashed" 2>/dev/null
+                        
+                        for case in "${batch_cases[@]}"; do
+                            echo "      Running individual case: $case"
+                            echo "$case" > "/tmp/individual_${suite_name}_${i}_${b}.txt"
+                            
+                            individual_output=$(run_test_on_device "$suite_name" "$binary_name" "/tmp/individual_${suite_name}_${i}_${b}.txt")
+                            
+                            individual_qpa_file="${RESULT_DIR}/qpa/${suite_name}_group_${i}_case_${qpa_idx}.qpa"
+                            pull_qpa "$individual_qpa_file"
+                            
+                            case_count=$(count_qpa_results "$individual_qpa_file")
+                            if [ "$case_count" -gt 0 ]; then
+                                c_pass=$(grep -c 'StatusCode="Pass"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_qw=$(grep -c 'StatusCode="QualityWarning"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_fail=$(grep -c 'StatusCode="Fail"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_ns=$(grep -c 'StatusCode="NotSupported"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_re=$(grep -c 'StatusCode="ResourceError"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_ie=$(grep -c 'StatusCode="InternalError"' "$individual_qpa_file" 2>/dev/null || echo 0)
+                                c_pass=$(echo "$c_pass" | grep -oE '[0-9]+' | head -1)
+                                c_qw=$(echo "$c_qw" | grep -oE '[0-9]+' | head -1)
+                                c_fail=$(echo "$c_fail" | grep -oE '[0-9]+' | head -1)
+                                c_ns=$(echo "$c_ns" | grep -oE '[0-9]+' | head -1)
+                                c_re=$(echo "$c_re" | grep -oE '[0-9]+' | head -1)
+                                c_ie=$(echo "$c_ie" | grep -oE '[0-9]+' | head -1)
+                                c_pass=${c_pass:-0}
+                                c_qw=${c_qw:-0}
+                                c_fail=${c_fail:-0}
+                                c_ns=${c_ns:-0}
+                                c_re=${c_re:-0}
+                                c_ie=${c_ie:-0}
+                                retry_passed=$((retry_passed + c_pass + c_qw))
+                                retry_failed=$((retry_failed + c_fail + c_re + c_ie))
+                                retry_not_supported=$((retry_not_supported + c_ns))
+                            else
+                                echo "        ⚠️  Case crashed: $case"
+                                retry_failed=$((retry_failed + 1))
+                            fi
+                            
+                            rm -f "/tmp/individual_${suite_name}_${i}_${b}.txt" 2>/dev/null
+                            qpa_idx=$((qpa_idx + 1))
+                        done
+                    else
+                        if [ -f "$batch_qpa" ] && [ -s "$batch_qpa" ]; then
+                            bp2=$(grep -c 'StatusCode="Pass"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bqw=$(grep -c 'StatusCode="QualityWarning"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bf2=$(grep -c 'StatusCode="Fail"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bns2=$(grep -c 'StatusCode="NotSupported"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bre=$(grep -c 'StatusCode="ResourceError"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bie=$(grep -c 'StatusCode="InternalError"' "$batch_qpa" 2>/dev/null || echo 0)
+                            bp2=$(echo "$bp2" | grep -oE '[0-9]+' | head -1)
+                            bqw=$(echo "$bqw" | grep -oE '[0-9]+' | head -1)
+                            bf2=$(echo "$bf2" | grep -oE '[0-9]+' | head -1)
+                            bns2=$(echo "$bns2" | grep -oE '[0-9]+' | head -1)
+                            bre=$(echo "$bre" | grep -oE '[0-9]+' | head -1)
+                            bie=$(echo "$bie" | grep -oE '[0-9]+' | head -1)
+                            bp2=${bp2:-0}
+                            bqw=${bqw:-0}
+                            bf2=${bf2:-0}
+                            bns2=${bns2:-0}
+                            bre=${bre:-0}
+                            bie=${bie:-0}
+                            retry_passed=$((retry_passed + bp2 + bqw))
+                            retry_failed=$((retry_failed + bf2 + bre + bie))
+                            retry_not_supported=$((retry_not_supported + bns2))
+                            echo "    ✅ Sub-batch completed ($batch_actual/$batch_size): Pass=$((bp2+bqw)), Fail=$((bf2+bre+bie)), N/S=$bns2"
+                        else
+                            echo "    ✅ Sub-batch completed ($batch_actual/$batch_size)"
+                        fi
+                    fi
+                done
             fi
-        fi
-        
-        # 检查是否真的出错（更严格的错误检查）
-        real_error=false
-        if [ $exit_code -ne 0 ]; then
-            real_error=true
-        elif echo "$output" | grep -q "ERROR:" || echo "$output" | grep -q "FATAL:" || echo "$output" | grep -q "CRASH:" || echo "$output" | grep -q "ABORT:"; then
-            # 只有当这些关键字后面跟着错误信息时才算真正的错误
-            if echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | grep -qE "(failed|error|crash|abort)"; then
-                real_error=true
-            fi
-        fi
-        
-        if [ "$real_error" = true ]; then
-            error_count=$((error_count + 1))
-            echo "结果: 组运行出错"
-            echo "退出码: $exit_code"
-            # 记录错误信息到调试日志
-            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 运行出错，退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
             
-            # 增加更详细的退出码解释
-            if [ $exit_code -gt 128 ]; then
-                # 退出码大于128通常表示进程被信号终止
-                signal_num=$((exit_code - 128))
-                echo "警告: 测试进程可能被信号终止 (信号: $signal_num)"
-                echo "  [DEBUG] 测试进程被信号终止 (信号: $signal_num)" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                case $signal_num in
-                    9)  echo "  信号详情: SIGKILL (进程被强制杀死)" ;;
-                    11) echo "  信号详情: SIGSEGV (段错误，内存访问违规)" ;;
-                    6)  echo "  信号详情: SIGABRT (进程异常终止)" ;;
-                    14) echo "  信号详情: SIGALRM (定时器信号)" ;;
-                    *)  echo "  信号详情: 未知信号 ($signal_num)" ;;
-                esac
-            elif [ $exit_code -eq 127 ]; then
-                echo "错误: 命令未找到"
-                echo "  [DEBUG] 错误: 命令未找到" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            elif [ $exit_code -eq 126 ]; then
-                echo "错误: 命令不可执行"
-                echo "  [DEBUG] 错误: 命令不可执行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            retry_total=$((retry_passed + retry_failed + retry_not_supported))
+            echo "  ✅ Retry completed for $retry_total cases."
+            echo "  Group test results after retry:"
+            if [ $retry_total -gt 0 ]; then
+                echo "    Total: $retry_total"
+                echo "    Passed: $retry_passed"
+                echo "    Failed: $retry_failed"
+                echo "    Not supported: $retry_not_supported"
+                echo "    Pass rate: $(awk "BEGIN {printf \"%.2f\", ($retry_passed*100)/$retry_total}")%"
+            else
+                echo "    No test results"
             fi
-            
-            # 检查是否有core dump文件
-            core_check=$(sdb shell "ls /tmp/core.* 2>/dev/null | wc -l" 2>/dev/null)
-            if [ "$core_check" -gt 0 ] && [ "$core_check" != "" ]; then
-                echo "警告: 检测到 $core_check 个core dump文件"
-                echo "  [DEBUG] 警告: 检测到 $core_check 个core dump文件" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                sdb shell "ls -la /tmp/core.* 2>/dev/null" | head -5
-            fi
-            
-            if echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)"; then
-                echo "错误信息:"
-                echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | head -3
-                # 记录错误信息到调试日志
-                echo "  [DEBUG] 错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "$output" | grep -E "(ERROR:|FATAL:|CRASH:|ABORT:)" | head -3 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            # 即使出错，也尝试统计运行的测试用例数
-            pass_count=$((pass_count + group_pass_count))
-            fail_count=$((fail_count + group_fail_count))
-            not_supported_count=$((not_supported_count + group_not_supported_count))
-            test_num=$((test_num + group_total_count))
-            echo "结果: 组运行完成 (通过: $group_pass_count, 失败: $group_fail_count, 不支持: $group_not_supported_count, 总计: $group_total_count)"
-            # 记录结果到调试日志
-            echo "  [DEBUG] 组运行结果: 通过=$group_pass_count, 失败=$group_fail_count, 不支持=$group_not_supported_count, 总计=$group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
         else
-            pass_count=$((pass_count + group_pass_count))
-            fail_count=$((fail_count + group_fail_count))
-            not_supported_count=$((not_supported_count + group_not_supported_count))
-            test_num=$((test_num + group_total_count))
-            echo "结果: 组运行完成 (通过: $group_pass_count, 失败: $group_fail_count, 不支持: $group_not_supported_count, 总计: $group_total_count)"
-            # 记录结果到调试日志
-            echo "  [DEBUG] $(date): 组 $group_index/$total_groups 运行完成，通过=$group_pass_count, 失败=$group_fail_count, 不支持=$group_not_supported_count, 总计=$group_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
+            echo "  ✅ Group completed successfully ($actual_run/$group_size)"
         fi
-        
-        # 如果有失败的测试用例，显示失败的测试用例数量
-        if [ $group_fail_count -gt 0 ]; then
-            echo "失败的测试用例数量: $group_fail_count"
-        fi
-        
-        # 只在出错时显示详细输出
-        if [ "$real_error" = true ]; then
-            echo "详细输出:"
-            echo "---------"
-            echo "$output" | tail -20
-            echo "---------"
-        fi
-        
-        echo ""
-        
-        # 下载该组的QPA文件
-        sdb pull "/opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa" "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_group_${group_index}.qpa" 2>/dev/null
-        
-        # 清理临时文件
-        rm -f "${group_cases_file}" > /dev/null 2>&1
-        sdb shell "rm -f /tmp/${test_name}_group_${group_index}.txt /opt/media/USBDriveA1/${test_name}_test_${group_index}.qpa" > /dev/null 2>&1
-        
-        # 如果连续出现错误，提供更多诊断信息
-        if [ $error_count -gt 2 ] && [ $group_index -le 2 ]; then
-            echo "警告: 前几个测试组中出现错误，可能存在问题"
-            echo "设备信息:"
-            sdb shell "uname -a" 2>&1 | head -5
-            echo "设备上VK-GL-CTS目录内容:"
-            sdb shell "ls -la /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR}/" 2>&1 | head -10
-            echo ""
-        fi
-        
-        # 每个组完成后短暂休息
-        sleep 5
-    done
-    
-    # 运行未运行的测试用例
-    if [ -s "${unrun_cases_file}" ]; then
-        unrun_count=$(wc -l < "${unrun_cases_file}")
-        echo "运行未运行的测试用例: ${unrun_count} 个"
-        # 记录调试信息
-        echo "  [DEBUG] $(date): 开始运行 ${unrun_count} 个未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        
-        # 显示未运行的测试用例列表
-        echo "  未运行的测试用例列表:"
-        head -10 "${unrun_cases_file}"
-        if [ $unrun_count -gt 10 ]; then
-            echo "  ... (还有 $((unrun_count - 10)) 个)"
-        fi
-        
-        # 记录未运行的测试用例列表到调试日志
-        echo "  [DEBUG] 未运行的测试用例列表:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        cat "${unrun_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        
-        # 将未运行的测试用例文件上传到设备
-        sdb push "${unrun_cases_file}" "/tmp/${test_name}_unrun_cases.txt" > /dev/null 2>&1
-        
-        # 通过sdb shell运行未运行的测试用例，使用--deqp-stdin-caselist参数
-        # 使用su -c来确保以root权限运行
-        # 不显示详细的测试输出，只显示关键信息
-        echo "正在运行未运行的测试用例..."
-        echo "  [DEBUG] $(date): 准备执行未运行的测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        
-        # 检查本地测试用例文件是否为空
-        if [ ! -s "${unrun_cases_file}" ]; then
-            echo "  [DEBUG] 本地测试用例文件为空，跳过执行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  跳过执行：测试用例文件为空"
-            unrun_pass_count=0
-            unrun_fail_count=0
-            unrun_not_supported_count=0
-            unrun_total_count=0
-            exit_code=0
-        else
-            echo "  [DEBUG] 本地测试用例文件行数: $(wc -l < "${unrun_cases_file"})" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            # 检查设备上是否存在测试用例文件
-            echo "  [DEBUG] 检查设备上是否存在测试用例文件..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            sdb_check=$(sdb shell "ls -la /tmp/${test_name}_unrun_cases.txt 2>/dev/null || echo 'FILE_NOT_FOUND'")
-            echo "  [DEBUG] 设备上文件检查结果: $sdb_check" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            # 检查设备上测试可执行文件是否存在
-            echo "  [DEBUG] 检查设备上测试可执行文件是否存在..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            binary_check=$(sdb shell "ls -la /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR}/${test_binary} 2>/dev/null || echo 'BINARY_NOT_FOUND'")
-            echo "  [DEBUG] 设备上可执行文件检查结果: $binary_check" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            # 显示将要执行的完整命令
-            cmd="su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && cat /tmp/${test_name}_unrun_cases.txt | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_unrun.qpa'"
-            echo "  [DEBUG] 执行命令: $cmd" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  执行命令: $cmd"
-            
-            # 执行命令并捕获输出
-            echo "  [DEBUG] 开始执行命令..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            echo "  执行命令中..."
-            echo "  命令输出:"
-            output=$(sdb shell "$cmd" 2>&1)
-            exit_code=$?
-            echo "$output"
-            echo "  命令执行完成"
-            echo "  退出码: $exit_code"
-        fi
-        
-        # 记录完整的输出和退出码到调试日志
-        echo "  [DEBUG] 未运行测试用例执行完成" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        echo "  [DEBUG] 退出码: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        echo "  [DEBUG] 完整输出:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        echo "$output" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        echo "  [DEBUG] 输出结束" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
 
-        # 检查测试结果
-        # 从输出中提取统计信息
-        unrun_pass_count=$(echo "$output" | grep -o "Passed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
-        unrun_fail_count=$(echo "$output" | grep -o "Failed: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
-        unrun_not_supported_count=$(echo "$output" | grep -o "Not supported: *[0-9]*" | head -1 | grep -o "[0-9]*" || echo "0")
+        echo -e "$output" >> "${RESULT_DIR}/logs/${suite_name}_group_${i}.log"
+        rm -f "$local_txt" 2>/dev/null
         
-        # 计算实际运行的测试用例数量
-        unrun_total_count=$((unrun_pass_count + unrun_fail_count + unrun_not_supported_count))
-        
-        echo "未运行的测试用例结果: 通过=$unrun_pass_count, 失败=$unrun_fail_count, 不支持=$unrun_not_supported_count, 总计=$unrun_total_count"
-        
-        # 记录结果到调试日志
-        echo "  [DEBUG] 未运行测试用例执行结果: 通过=$unrun_pass_count, 失败=$unrun_fail_count, 不支持=$unrun_not_supported_count, 总计=$unrun_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-        
-        # 检查是否有错误
-        if [ $exit_code -ne 0 ] || [ $unrun_total_count -ne $unrun_count ] || echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
-            echo "  警告: 运行未运行的测试用例时出现问题"
-            echo "  [DEBUG] 警告: 运行未运行的测试用例时出现问题" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            
-            if [ $exit_code -ne 0 ]; then
-                echo "    退出码: $exit_code"
-                echo "    [DEBUG] 退出码异常: $exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            
-            if [ $unrun_total_count -ne $unrun_count ]; then
-                echo "    期望运行: $unrun_count, 实际运行: $unrun_total_count"
-                echo "    [DEBUG] 运行数量不匹配: 期望=$unrun_count, 实际=$unrun_total_count" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                
-                # 添加更详细的诊断信息
-                echo "    [DEBUG] 详细诊断信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 测试用例文件行数: $(wc -l < "${unrun_cases_file}")" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 测试用例文件大小: $(wc -c < "${unrun_cases_file}") 字节" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 测试用例文件前10行:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                head -10 "${unrun_cases_file}" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            
-            if echo "$output" | grep -q "ERROR\|FATAL\|CRASH\|ABORT"; then
-                echo "    检测到错误信息:"
-                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5
-                echo "    [DEBUG] 检测到错误信息:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "$output" | grep -E "ERROR|FATAL|CRASH|ABORT" | head -5 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-            
-            # 如果没有运行任何测试用例，显示更多诊断信息
-            if [ $unrun_total_count -eq 0 ]; then
-                echo "    [DEBUG] 严重问题: 没有运行任何测试用例" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 检查测试用例格式是否正确" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 检查测试可执行文件是否正常工作" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG]   - 检查环境变量设置是否正确" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                
-                # 尝试运行一个简单的测试用例来验证环境
-                echo "    [DEBUG] 尝试运行单个测试用例进行验证..." >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                first_case=$(head -1 "${unrun_cases_file}")
-                echo "    [DEBUG] 运行测试用例: $first_case" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                test_output=$(sdb shell "su -c 'export XDG_RUNTIME_DIR=/run && export WAYLAND_DISPLAY=${WAYLAND_DISPLAY} && cd /usr/bin/VK-GL-CTS-1.4.5/${MODULE_DIR} && echo \"$first_case\" | ./${test_binary} --deqp-stdin-caselist --deqp-log-filename=/opt/media/USBDriveA1/${test_name}_test_single.qpa' --deqp-surface-width=400 --deqp-surface-height=300 --deqp-visibility=hidden" 2>&1)
-                test_exit_code=$?
-                echo "    [DEBUG] 单个测试用例执行结果，退出码: $test_exit_code" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "    [DEBUG] 单个测试用例输出:" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-                echo "$test_output" | head -20 >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-            fi
-        fi
-        
-        # 更新统计信息
-        pass_count=$((pass_count + unrun_pass_count))
-        fail_count=$((fail_count + unrun_fail_count))
-        not_supported_count=$((not_supported_count + unrun_not_supported_count))
-        test_num=$((test_num + unrun_total_count))
-        
-        # 下载未运行的测试用例的QPA文件
-        sdb pull "/opt/media/USBDriveA1/${test_name}_test_unrun.qpa" "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_unrun.qpa" 2>/dev/null
-        
-        # 清理未运行的测试用例文件
-        rm -f "${unrun_cases_file}" > /dev/null 2>&1
-        sdb shell "rm -f /tmp/${test_name}_unrun_cases.txt /opt/media/USBDriveA1/${test_name}_test_unrun.qpa" > /dev/null 2>&1
-    else
-        echo "没有未运行的测试用例需要重新运行"
-        echo "  [DEBUG] $(date): 没有未运行的测试用例需要重新运行" >> "${RESULT_DIR}/debug_${test_name}_${TIMESTAMP}.log"
-    fi
-    exec 3<&-
-
-    # 累加到总体统计
-    total_pass_count=$((total_pass_count + pass_count))
-    total_fail_count=$((total_fail_count + fail_count))
-    total_not_supported_count=$((total_not_supported_count + not_supported_count))
-    total_error_count=$((total_error_count + error_count))
-    total_test_num=$((total_test_num + test_num))
-
-    # 计算通过率
-    if [ "$test_num" -gt 0 ]; then
-        pass_rate=$(awk -v pass="$pass_count" -v total="$test_num" 'BEGIN {printf "%.2f", (pass/total)*100}')
-    else
-        pass_rate="0.00"
-    fi
-
-    # 合并所有QPA文件
-    echo "合并所有QPA文件..."
-    MERGED_QPA_FILE="${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_merged.qpa"
-    
-    # 初始化合并文件，只处理第一个存在的QPA文件
-    first_file=true
-    session_info_extracted=false
-    
-    # 创建一个临时文件来存储合并后的内容
-    temp_merged_file="/tmp/${test_name}_${TIMESTAMP}_merged.qpa"
-    > "${temp_merged_file}"
-    
-    # 遍历所有QPA文件并合并它们的内容
-    for qpa_file in "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_group_"*.qpa "${RESULT_DIR}/qpa/${test_name}_${TIMESTAMP}_unrun.qpa"; do
-        if [ -f "$qpa_file" ]; then
-            if [ "$first_file" = true ]; then
-                # 对于第一个文件，保留完整的XML结构
-                cat "$qpa_file" > "${temp_merged_file}"
-                first_file=false
-                session_info_extracted=true
-            else
-                # 对于后续文件，只提取测试用例部分
-                # 跳过XML声明、TestLog标签和SessionInfo标签
-                in_session_info=false
-                in_test_case=false
-                
-                while IFS= read -r line; do
-                    # 检查是否进入SessionInfo标签
-                    if [[ $line == *"<SessionInfo>"* ]]; then
-                        in_session_info=true
-                        continue
-                    fi
-                    
-                    # 检查是否离开SessionInfo标签
-                    if [[ $line == *"</SessionInfo>"* ]]; then
-                        in_session_info=false
-                        continue
-                    fi
-                    
-                    # 如果在SessionInfo标签内，跳过
-                    if [ "$in_session_info" = true ]; then
-                        continue
-                    fi
-                    
-                    # 检查是否是XML声明行，跳过
-                    if [[ $line == *"<?xml version"* ]]; then
-                        continue
-                    fi
-                    
-                    # 检查是否是TestLog开始标签，跳过
-                    if [[ $line == *"<TestLog>"* ]]; then
-                        continue
-                    fi
-                    
-                    # 检查是否是TestLog结束标签，跳过
-                    if [[ $line == *"</TestLog>"* ]]; then
-                        continue
-                    fi
-                    
-                    # 如果不是以上情况，将行写入合并文件
-                    echo "$line" >> "${temp_merged_file}"
-                done < "$qpa_file"
-            fi
+        if [ $i -lt $((GROUP_COUNT - 1)) ]; then
+            sleep 3
         fi
     done
     
-    # 如果至少处理了一个文件，替换TestLog结束标签
-    if [ "$first_file" = false ]; then
-        # 移除最后一行(应该是TestLog结束标签)，然后添加正确的结束标签
-        head -n -1 "${temp_merged_file}" > "${MERGED_QPA_FILE}"
-        echo "</TestLog>" >> "${MERGED_QPA_FILE}"
-        echo "QPA文件合并完成: ${MERGED_QPA_FILE}"
-    else
-        # 如果没有QPA文件，创建一个基本的QPA文件
-        echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><TestLog></TestLog>" > "${MERGED_QPA_FILE}"
-        echo "没有QPA文件需要合并，创建了基本的QPA文件: ${MERGED_QPA_FILE}"
+    echo ""
+    echo "==========================================="
+    echo "  Converting QPA files to CSV for suite ${suite_name}"
+    echo "==========================================="
+    
+    merge_and_convert_suite "$suite_name"
+    
+    SUITE_CSV_FILE=$(ls -t "${RESULT_DIR}/csv/${suite_name}_"*.csv 2>/dev/null | head -n 1)
+    
+    # Add crashed cases directly to CSV
+    if [ -f "$SUITE_CSV_FILE" ]; then
+        csv_total=$(awk -F',' 'NR > 1 {count++} END {print count+0}' "$SUITE_CSV_FILE")
+        if [ "$csv_total" -lt "$actual_total" ]; then
+            missing=$((actual_total - csv_total))
+            echo "⚠️  CSV has $csv_total cases, expected $actual_total. Adding $missing crashed cases..."
+            
+            declare -A csv_cases
+            while IFS=',' read -r case_name status; do
+                csv_cases["$case_name"]=1
+            done < <(awk -F',' 'NR > 1 {print $1}' "$SUITE_CSV_FILE")
+            
+            added=0
+            for case in "${ALL_CASES[@]}"; do
+                if [ -z "${csv_cases[$case]}" ]; then
+                    echo "${case},Fail" >> "$SUITE_CSV_FILE"
+                    added=$((added + 1))
+                fi
+            done
+            unset csv_cases
+            echo "Added $added crashed cases to CSV"
+        fi
     fi
     
-    # 清理临时文件
-    rm -f "${temp_merged_file}" > /dev/null 2>&1
+    display_suite_report "$suite_name" "$SUITE_CSV_FILE"
     
-    # 将合并后的QPA文件上传到设备
-    sdb push "${MERGED_QPA_FILE}" "/tmp/${test_name}_test.qpa" > /dev/null 2>&1
+    suite_end_time=$(date +%s)
+    suite_duration=$((suite_end_time - suite_start_time))
+    suite_hours=$((suite_duration / 3600))
+    suite_mins=$(( (suite_duration % 3600) / 60 ))
+    suite_secs=$((suite_duration % 60))
+    echo "Suite ${suite_name} duration: ${suite_hours}h ${suite_mins}m ${suite_secs}s"
     
-    # 在设备上转换QPA为CSV
-    echo "在设备上转换QPA为CSV..."
-    CSV_FILE="${RESULT_DIR}/csv/${test_name}_${TIMESTAMP}.csv"
-    sdb shell "/usr/bin/VK-GL-CTS-1.4.5/executor/testlog-to-csv /tmp/${test_name}_test.qpa" \> "/tmp/${test_name}_test.csv" 2>/dev/null
-
-    # 下载CSV文件
-    sdb pull "/tmp/${test_name}_test.csv" "${CSV_FILE}" 2>/dev/null
-    if [ -f "$CSV_FILE" ]; then
-        csv_lines=$(wc -l < "$CSV_FILE")
-        if [ "$csv_lines" -gt 0 ]; then
-            echo "CSV转换成功 ($csv_lines 行): $CSV_FILE"
-        else
-            echo "CSV转换成功但文件为空: $CSV_FILE"
-        fi
-    else
-        echo "CSV转换失败或不存在"
-    fi
-
-    # 清理设备上的临时QPA和CSV文件
-    sdb shell "rm -f /tmp/${test_name}_test.qpa /tmp/${test_name}_test.csv" 2>/dev/null
-    echo ""
-    
-    # 清理设备上的临时CSV文件
-    sdb shell "rm -f /tmp/*.csv" 2>/dev/null
-
-    echo "测试结果汇总:"
-    echo "  总测试数: ${test_num}"
-    echo "  通过: ${pass_count}"
-    echo "  失败: ${fail_count}"
-    echo "  不支持: ${not_supported_count}"
-    echo "  错误: ${error_count}"
-    echo "  通过率: ${pass_rate}%"
-    echo ""
-
-    # 生成summary报告
-    {
-        echo "=========================================="
-        echo "OpenGL/EGL CTS 测试报告: ${test_name}"
-        echo "=========================================="
-        echo "测试时间: $(date)"
-        echo "=========================================="
-        echo ""
-        echo "测试结果汇总:"
-        echo "=========================================="
-        echo "  总测试数: ${test_num}"
-        echo "  通过: ${pass_count}"
-        echo "  失败: ${fail_count}"
-        echo "  不支持: ${not_supported_count}"
-        echo "  错误: ${error_count}"
-        echo "=========================================="
-        echo ""
-        echo "文件位置:"
-        echo "  QPA文件: ${MERGED_QPA_FILE}"
-        if [ -f "$CSV_FILE" ]; then
-            echo "  CSV文件: ${CSV_FILE}"
-        else
-            echo "  CSV文件: 未生成"
-        fi
-        echo "  Summary: ${SUITE_SUMMARY_FILE}"
-        echo "=========================================="
-        echo ""
-        echo "=========================================="
-    } > "${SUITE_SUMMARY_FILE}"
-
-    echo "Summary报告生成成功: ${SUITE_SUMMARY_FILE}"
-    echo ""
+    echo "Cleaning up temporary files on device for suite ${suite_name}..."
+    sdb shell "rm -f ${DEVICE_QPA_DIR}/temp.qpa" >/dev/null 2>&1
+    sdb shell "rm -f ${DEVICE_QPA_DIR}/${suite_name}_*.qpa" >/dev/null 2>&1
+    sleep 5
 done
 
+echo ""
+echo "==========================================="
+echo "           Test Execution Summary"
+echo "==========================================="
+echo "Total test cases: $global_total"
+echo "Passed: $global_passed"
+echo "Failed: $global_failed"
+echo "Not supported: $global_not_supported"
+echo ""
+echo "Pass rate: $(awk "BEGIN {printf \"%.2f\", ($global_passed*100)/($global_total==0?1:$global_total)}")%"
+echo "==========================================="
+
+echo ""
