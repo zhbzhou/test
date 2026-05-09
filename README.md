@@ -1,3 +1,13 @@
+root:/tmp> pid=$(pgrep cobalt); if [ -n "$pid" ]; then cat /proc/$pid/maps | grep libGLESv2; else echo "Cobalt not running"; fi
+afd30000-afd37000 r-xp 00000000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
+afd37000-afd46000 ---p 00007000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
+afd46000-afd47000 r--p 00006000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
+afd47000-afd48000 rw-p 00007000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
+b639e000-b63db000 r-xp 00000000 b3:02 389        /usr/lib/libGLESv2.so.2.0
+b63db000-b63dc000 r--p 0003c000 b3:02 389        /usr/lib/libGLESv2.so.2.0
+b63dc000-b63dd000 rw-p 0003d000 b3:02 389        /usr/lib/libGLESv2.so.2.0
+
+
 你现在的问题本质是：
 
 只升级了部分 Mesa 组件
