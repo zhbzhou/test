@@ -1,61 +1,107 @@
-Starting program: /usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher
-warning: File "/usr/lib/libthread_db.so.1" auto-loading has been declined by your `auto-load safe-path' set to "$debugdir:$datadir/auto-load".
-To enable execution of this file add
-        add-auto-load-safe-path /usr/lib/libthread_db.so.1
-line to your configuration file "/root/.gdbinit".
-To completely disable this security protection add
-        set auto-load safe-path /
-line to your configuration file "/root/.gdbinit".
-For more information about this security protection see the
-"Auto-loading safe path" section in the GDB manual.  E.g., run from the shell:
-        info "(gdb)Auto-loading safe path"
-warning: Unable to find libthread_db matching inferior's thread library, thread debugging will not be available.
-Traceback (most recent call last):
-  File "/usr/share/gdb/auto-load/usr/lib/libgstreamer-1.0.so.0.2411.0-gdb.py", line 9, in <module>
-    from gst_gdb import register
-  File "/usr/share/gstreamer-1.0/gdb/gst_gdb.py", line 26, in <module>
-    from glib_gobject_helper import g_type_to_name, g_type_name_from_instance, \
-  File "/usr/share/gstreamer-1.0/gdb/glib_gobject_helper.py", line 96
-    return gdb.parse_and_eval(f"g_type_name({gtype})").string()
-                                                    ^
-SyntaxError: invalid syntax
-[New LWP 17304]
-[17286:17286:19700101,095449.329928:INFO crashpad_client_linux.cc:333] Added evergreen info: --evergreen-information=0x5a8960
-[17286:17286:19700101,095449.332394:INFO crashpad_client_linux.cc:96] Added annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
-[New LWP 17306]
-[New LWP 17307]
-[New LWP 17308]
-[New LWP 17309]
-[New LWP 17311]
-[New LWP 17310]
-[New LWP 17312]
-[New LWP 17313]
-[17286:17286:19700101,095449.346179:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
-[New LWP 17314]
-[17286:17286:19700101,095449.346826:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=prod=Cobalt_Evergreen
-[17286:17286:19700101,095449.347012:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=ver=5.30.2
-[New LWP 17315]
-[New LWP 17316]
-[New LWP 17317]
-[New LWP 17318]
-
-(process:17286): GLib-CRITICAL **: 09:54:49.372: '(iislu)' is not a valid GVariant format string
-
-(process:17286): GLib-CRITICAL **: 09:54:49.373: g_variant_new: assertion 'valid_format_string (format_string, TRUE, NULL) && format_string[0] != '?' && format_string[0] != '@' && format_string[0] != '*' && format_string[0] != 'r'' failed
-[New LWP 17319]
-[New LWP 17320]
-[New LWP 17321]
-[New LWP 17336]
-[New LWP 17337]
-[New LWP 17338]
-
-Thread 21 "Rasterizer" received signal SIGSEGV, Segmentation fault.
-[Switching to LWP 17338]
-0xaf446f90 in ?? ()
-(gdb) thread apply all bt
-
-Thread 21 (LWP 17338):
-#0  0xaf446f90 in ?? ()
-#1  0xaf655b10 in ?? ()
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5958c7e in ?? () from /lib/libbuxton2.so.1
+#2  0xb5953396 in ?? () from /lib/libbuxton2.so.1
+#3  0xb59537a4 in ?? () from /lib/libbuxton2.so.1
+#4  0xb5956062 in buxton_register_notification_sync () from /lib/libbuxton2.so.1
+#5  0xb6f1538c in ?? () from /lib/libvconf.so.0
+#6  0x004db31c in starboard::tizen::product::ApplicationTizen::CreateWindow(SbWindowOptions const*) ()
+#7  0xaf106628 in ?? ()
 Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) c
+Continuing.
 
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5958c92 in ?? () from /lib/libbuxton2.so.1
+#2  0xb5953396 in ?? () from /lib/libbuxton2.so.1
+#3  0xb59537a4 in ?? () from /lib/libbuxton2.so.1
+#4  0xb5956062 in buxton_register_notification_sync () from /lib/libbuxton2.so.1
+#5  0xb6f1538c in ?? () from /lib/libvconf.so.0
+#6  0x004db31c in starboard::tizen::product::ApplicationTizen::CreateWindow(SbWindowOptions const*) ()
+#7  0xaf106628 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) c
+Continuing.
+[New LWP 23918]
+
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5958c7e in ?? () from /lib/libbuxton2.so.1
+#2  0xb5953396 in ?? () from /lib/libbuxton2.so.1
+#3  0xb59537a4 in ?? () from /lib/libbuxton2.so.1
+#4  0xb5956062 in buxton_register_notification_sync () from /lib/libbuxton2.so.1
+#5  0xb6f1538c in ?? () from /lib/libvconf.so.0
+#6  0x004db33c in starboard::tizen::product::ApplicationTizen::CreateWindow(SbWindowOptions const*) ()
+#7  0xaf106628 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) c
+Continuing.
+
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) c
+Continuing.
+
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) c
+Continuing.
+
+(process:23593): GLib-CRITICAL **: 10:18:41.684: '(iislu)' is not a valid GVariant format string
+
+(process:23593): GLib-CRITICAL **: 10:18:41.685: g_variant_new: assertion 'valid_format_string (format_string, TRUE, NULL) && format_string[0] != '?' && format_string[0] != '@' && format_string[0] != '*' && format_string[0] != 'r'' failed
+[New LWP 23948]
+[New LWP 23949]
+[Switching to LWP 23619]
+
+Thread 12 "Updater" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5958c7e in ?? () from /lib/libbuxton2.so.1
+#2  0xb5953396 in ?? () from /lib/libbuxton2.so.1
+#3  0xb5953544 in ?? () from /lib/libbuxton2.so.1
+#4  0xb5955acc in buxton_set_value_sync () from /lib/libbuxton2.so.1
+#5  0xb6f1574a in ?? () from /lib/libvconf.so.0
+#6  0xb6f1678c in vconf_set_str () from /lib/libvconf.so.0
+#7  0x004c2008 in SetVconfInfoStr(char const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) ()
+#8  0x004f2618 in starboard::tizen::evergreen::cobaltUpdateFailedHandler(char const*) ()
+#9  0x004ef5b8 in starboard::tizen::evergreen::UpdaterState(CobaltExtensionUpdaterNotificationState, char const*) ()
+#10 0xaf1ea5dc in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) c
+Continuing.
+[New LWP 24061]
+
+Thread 12 "Updater" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5958c92 in ?? () from /lib/libbuxton2.so.1
+#2  0xb5953396 in ?? () from /lib/libbuxton2.so.1
+#3  0xb5953544 in ?? () from /lib/libbuxton2.so.1
+#4  0xb5955acc in buxton_set_value_sync () from /lib/libbuxton2.so.1
+#5  0xb6f1574a in ?? () from /lib/libvconf.so.0
+#6  0xb6f1678c in vconf_set_str () from /lib/libvconf.so.0
+#7  0x004c2008 in SetVconfInfoStr(char const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) ()
+#8  0x004f2618 in starboard::tizen::evergreen::cobaltUpdateFailedHandler(char const*) ()
+#9  0x004ef5b8 in starboard::tizen::evergreen::UpdaterState(CobaltExtensionUpdaterNotificationState, char const*) ()
+#10 0xaf1ea5dc in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) c
+Continuing.
+[Switching to LWP 23593]
+
+Thread 1 "cobalt_launcher" hit Breakpoint 1, 0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+(gdb) bt
+#0  0xb60e50ba in g_variant_new () from /lib/libglib-2.0.so.0
+#1  0xb5a9b088 in ?? () from /lib/libgio-2.0.so.0
+#2  0xb5a9fe60 in g_dbus_connection_signal_subscribe () from /lib/libgio-2.0.so.0
+#3  0xb35e67e8 in ?? () from /lib/libnetwork.so.0
+#4  0xb35ebb10 in ?? () from /lib/libnetwork.so.0
+#5  0xb35deb82 in net_register_client () from /lib/libnetwork.so.0
+#6  0xb6cbdcac in ?? () from /lib/libcapi-network-connection.so.1
+#7  0xb6cb456c in connection_create () from /lib/libcapi-network-connection.so.1
+#8  0x004db42c in starboard::tizen::product::ApplicationTizen::CreateWindow(SbWindowOptions const*) ()
+#9  0xaf106628 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
