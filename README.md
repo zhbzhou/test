@@ -1,260 +1,227 @@
-Starting program: /usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher
-warning: File "/usr/lib/libthread_db.so.1" auto-loading has been declined by your `auto-load safe-path' set to "$debugdir:$datadir/auto-load".
-To enable execution of this file add
-        add-auto-load-safe-path /usr/lib/libthread_db.so.1
-line to your configuration file "/root/.gdbinit".
-To completely disable this security protection add
-        set auto-load safe-path /
-line to your configuration file "/root/.gdbinit".
-For more information about this security protection see the
-"Auto-loading safe path" section in the GDB manual.  E.g., run from the shell:
-        info "(gdb)Auto-loading safe path"
-warning: Unable to find libthread_db matching inferior's thread library, thread debugging will not be available.
-Traceback (most recent call last):
-  File "/usr/share/gdb/auto-load/usr/lib/libgstreamer-1.0.so.0.2411.0-gdb.py", line 9, in <module>
-    from gst_gdb import register
-  File "/usr/share/gstreamer-1.0/gdb/gst_gdb.py", line 26, in <module>
-    from glib_gobject_helper import g_type_to_name, g_type_name_from_instance, \
-  File "/usr/share/gstreamer-1.0/gdb/glib_gobject_helper.py", line 96
-    return gdb.parse_and_eval(f"g_type_name({gtype})").string()
-                                                    ^
-SyntaxError: invalid syntax
-[New LWP 32157]
-[32128:32128:19700101,104812.581346:INFO crashpad_client_linux.cc:333] Added evergreen info: --evergreen-information=0x5a8960
-[32128:32128:19700101,104812.582748:INFO crashpad_client_linux.cc:96] Added annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
-[New LWP 32159]
-[New LWP 32160]
-[New LWP 32161]
-[New LWP 32162]
-[New LWP 32164]
-[New LWP 32163]
-[New LWP 32165]
-[New LWP 32166]
-[New LWP 32167]
-[32128:32128:19700101,104812.596099:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
-[32128:32128:19700101,104812.596389:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=prod=Cobalt_Evergreen
-[32128:32128:19700101,104812.596444:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=ver=5.30.2
-[New LWP 32168]
-[New LWP 32169]
-[New LWP 32170]
-[New LWP 32171]
-[New LWP 32172]
-[New LWP 32173]
-[New LWP 32174]
-[New LWP 32189]
-[New LWP 32190]
-[New LWP 32191]
-
-Thread 21 "Rasterizer" received signal SIGSEGV, Segmentation fault.
-[Switching to LWP 32191]
-0xaf446f90 in ?? ()
-(gdb) thread apply all bt
-
-Thread 21 (LWP 32191):
-#0  0xaf446f90 in ?? ()
-#1  0xaf655b10 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 20 (LWP 32190):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0x5f60d8, futex_word@entry=0xa72c5344 <pthread_cond_wait@got.plt>, expected=2782767012, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=6250672, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xa72c5344 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0x5f60b0, mutex=0x5f60d8, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0x5f60b0, mutex=0x5f60d8) at pthread_cond_wait.c:618
-#5  0xa6aa321a in cnd_wait (cond=<optimized out>, mtx=<optimized out>) at ../src/c11/impl/threads_posix.c:111
-#6  0xa6a8a148 in util_queue_thread_func (input=<optimized out>) at ../src/util/u_queue.c:275
-#7  0xb5b90eac in start_thread (arg=0xa5ddae60) at pthread_create.c:447
-#8  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 19 (LWP 32189):
-#0  0xb5bf5a18 in __GI___poll (fds=0x615208, nfds=7, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
-#1  __GI___poll (fds=0x615208, nfds=7, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
-#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
-#3  0xb60b182e in g_main_loop_run () from /lib/libglib-2.0.so.0
-#4  0xb07b36e6 in ?? () from /lib/libtpl-egl.so.1
-#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
-#6  0xb5b90eac in start_thread (arg=0xa671ce60) at pthread_create.c:447
-#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 18 (LWP 32174):
-#0  0xb5bf5a18 in __GI___poll (fds=0x60ffb8, nfds=2, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
-#1  __GI___poll (fds=0x60ffb8, nfds=2, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
-#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
-#3  0xb60b182e in g_main_loop_run () from /lib/libglib-2.0.so.0
-#4  0xb5aab20a in ?? () from /lib/libgio-2.0.so.0
-#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
-#6  0xb5b90eac in start_thread (arg=0xa7af7e60) at pthread_create.c:447
-#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 17 (LWP 32173):
-#0  0xb5bf5a18 in __GI___poll (fds=0xb0600c70, nfds=1, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
-#1  __GI___poll (fds=0xb0600c70, nfds=1, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
-#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
-#3  0xb60b164c in g_main_context_iteration () from /lib/libglib-2.0.so.0
-#4  0xb60b1674 in ?? () from /lib/libglib-2.0.so.0
-#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
-#6  0xb5b90eac in start_thread (arg=0xa82f8e60) at pthread_create.c:447
-#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 16 (LWP 32172):
-#0  syscall () at ../sysdeps/unix/sysv/linux/arm/syscall.S:37
-#1  0xb60f29d4 in g_cond_wait () from /lib/libglib-2.0.so.0
-#2  0xb6089626 in ?? () from /lib/libglib-2.0.so.0
-#3  0xb60d0b20 in ?? () from /lib/libglib-2.0.so.0
-#4  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
-#5  0xb5b90eac in start_thread (arg=0xa8af9e60) at pthread_create.c:447
-#6  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 15 (LWP 32171):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xa92fa58c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1456495260, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xa92fa564, mutex=0xa92fa58c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xa92fa564, mutex=0xa92fa58c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 14 (LWP 32170):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xa9afb58c, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1448102556, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xa9afb564, mutex=0xa9afb58c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xa9afb564, mutex=0xa9afb58c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
+(gdb) info sharedlibrary
+From        To          Syms Read   Shared Object Library
+0xb6fd2b00  0xb6ff6518  Yes         /lib/ld-linux.so.3
+0xb6f45de0  0xb6fa2fe0  Yes (*)     /lib/libaul.so.0
+0xb6f1cda0  0xb6f20874  Yes (*)     /lib/libxdgmime.so.1
+0xb6f14afc  0xb6f189c8  Yes (*)     /lib/libvconf.so.0
+0xb6f0d0c8  0xb6f0f728  Yes (*)     /lib/libappcore-common.so.1
+0xb6f05c40  0xb6f08420  Yes (*)     /lib/libboost_chrono.so.1.83.0
+0xb6f023a0  0xb6f0246c  Yes (*)     /lib/libboost_date_time.so.1.83.0
+0xb6eecd54  0xb6efeb00  Yes (*)     /lib/libboost_filesystem.so.1.83.0
+0xb6edc638  0xb6ee2f48  Yes (*)     /lib/libboost_iostreams.so.1.83.0
+0xb6eca3cc  0xb6ed2fb4  Yes (*)     /lib/libboost_prg_exec_monitor.so.1.83.0
+0xb6e7dae0  0xb6ebd484  Yes (*)     /lib/libboost_program_options.so.1.83.0
+0xb6e6d9c8  0xb6e6f690  Yes (*)     /lib/libboost_random.so.1.83.0
+0xb6e357c4  0xb6e65140  Yes (*)     /lib/libboost_regex.so.1.83.0
+0xb6e0abcc  0xb6e28c7c  Yes (*)     /lib/libboost_serialization.so.1.83.0
+0xb6df8390  0xb6df845c  Yes (*)     /lib/libboost_system.so.1.83.0
+0xb6de347c  0xb6df4134  Yes (*)     /lib/libboost_thread.so.1.83.0
+0xb6d64f88  0xb6dca4bc  Yes (*)     /lib/libboost_unit_test_framework.so.1.83.0
+0xb6d369b4  0xb6d4afc4  Yes (*)     /lib/libboost_wserialization.so.1.83.0
+0xb6d28e04  0xb6d29d1c  Yes (*)     /lib/libcapi-appfw-application.so.0
+0xb6d21c54  0xb6d23b54  Yes (*)     /lib/libcapi-appfw-app-common.so.0
+0xb6d12880  0xb6d1afc0  Yes (*)     /lib/libapp-core-cpp.so.1
+0xb6d025d8  0xb6d06860  Yes (*)     /lib/libcapi-appfw-app-manager.so.0
+0xb6cf45a0  0xb6cfa4f4  Yes (*)     /lib/libcapi-appfw-package-manager.so.0
+0xb6cd5e88  0xb6ce6b14  Yes (*)     /lib/libcapi-media-audio-io.so.0
+0xb6cc89e0  0xb6cc9864  Yes (*)     /lib/libaudio-effect.so.1
+0xb6cb4188  0xb6cc13a0  Yes (*)     /lib/libcapi-network-connection.so.1
+0xb6caaf70  0xb6cac6a8  Yes (*)     /lib/libcapi-system-info.so.0
+0xb6bf84d0  0xb6c897f4  Yes (*)     /lib/libcapi-network-bluetooth.so.0
+0xb6bdae28  0xb6bdeb74  Yes (*)     /lib/libedbus.so.1
+0xb6ba0430  0xb6bcdabc  Yes (*)     /lib/libdbus-1.so.3
+0xb68b68f8  0xb6af84ba  Yes (*)     /lib/libelementary.so.1
+0xb680b5f0  0xb681c128  Yes (*)     /lib/libecore_evas.so.1
+0xb67f890c  0xb67faefc  Yes (*)     /lib/libecore_imf.so.1
+0xb67e3488  0xb67e4378  Yes (*)     /lib/libecore_input.so.1
+0xb6782430  0xb67cbe58  Yes (*)     /lib/libecore_con.so.1
+0xb66f3860  0xb675b6bc  Yes (*)     /lib/libedje.so.1
+0xb66bd7b0  0xb66cf05c  Yes (*)     /lib/liblua.so.5.1
+0xb6692ad0  0xb66ad9a4  Yes (*)     /lib/libeldbus.so.1
+0xb6684a28  0xb66873b0  Yes (*)     /lib/libethumb_client.so.1
+0xb6679850  0xb667df80  Yes (*)     /lib/libethumb.so.1
+0xb6668460  0xb66708cc  Yes (*)     /lib/libemotion.so.1
+0xb664b750  0xb665bd64  Yes (*)     /lib/libefreet.so.1
+0xb66348b8  0xb66417b8  Yes (*)     /lib/libeio.so.1
+0xb660cac0  0xb661f158  Yes (*)     /lib/libeet.so.1
+0xb645caa8  0xb65a2f20  Yes (*)     /lib/libevas.so.1
+0xb640d268  0xb64186cc  Yes (*)     /lib/libector.so.1
+0xb63e0be8  0xb63fedfc  Yes (*)     /lib/libemile.so.1
+0xb63a29c4  0xb63d5f50  Yes (*)     /lib/libGLESv2.so.2
+0xb6394d3c  0xb639b174  Yes (*)     /lib/libEGL.so.1
 --Type <RET> for more, q to quit, c to continue without paging--
-Thread 13 (LWP 32169):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xaa2fc594, futex_word@entry=0xaa2fc380, expected=expected@entry=0, clockid=clockid@entry=-1439709928, abstime=abstime@entry=0x0, private=0, private@entry=-1439709844, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaa2fc380, expected=expected@entry=0, clockid=clockid@entry=-1439709928, abstime=abstime@entry=0x0, private=0, private@entry=81) at futex-internal.c:139
-#3  0xb5b90514 in __pthread_cond_wait_common (cond=0xaa2fc56c, mutex=0x0, clockid=-1439709928, abstime=<optimized out>) at pthread_cond_wait.c:503
-#4  ___pthread_cond_timedwait64 (cond=0xaa2fc56c, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
-#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
-#6  0x00413ebc in __abi_wrap_pthread_cond_timedwait ()
-#7  0xaec063f8 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 12 (LWP 32168):
-#0  0xb5c00ab4 in epoll_wait (epfd=39, events=0xab303248, maxevents=32, timeout=30000) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
-#1  0x0050fd84 in epoll_dispatch ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 11 (LWP 32167):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xab2fe58c, futex_word@entry=0xaebd8314, expected=33152, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1422924444, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xab2fe564, mutex=0xab2fe58c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xab2fe564, mutex=0xab2fe58c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 10 (LWP 32166):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xabcd858c, futex_word@entry=0xaebd8314, expected=43, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1412594332, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xabcd8564, mutex=0xabcd858c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xabcd8564, mutex=0xabcd858c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 9 (LWP 32165):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xac4d958c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1404201628, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xac4d9564, mutex=0xac4d958c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xac4d9564, mutex=0xac4d958c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 8 (LWP 32163):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xaccda634, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1395808756, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xaccda60c, mutex=0xaccda634, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xaccda60c, mutex=0xaccda634) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 7 (LWP 32164):
-#0  0xb5c00ab4 in epoll_wait (epfd=34, events=0xaf8007c8, maxevents=32, timeout=-1) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
-#1  0x0050fd84 in epoll_dispatch ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 6 (LWP 32162):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0x5bf6b8, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=6026740, abstime=abstime@entry=0x0, private=0, private@entry=6026896, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=6026740, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b90514 in __pthread_cond_wait_common (cond=0x5bf690, mutex=0x0, clockid=6026740, abstime=<optimized out>) at pthread_cond_wait.c:503
-#4  ___pthread_cond_timedwait64 (cond=0x5bf690, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
-#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
-#6  0x00413ebc in __abi_wrap_pthread_cond_timedwait ()
-#7  0xaec063f8 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 5 (LWP 32161):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xb05fe58c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1335892636, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb05fe564, mutex=0xb05fe58c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xb05fe564, mutex=0xb05fe58c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
+0xb6389834  0xb638b844  Yes (*)     /lib/libtzplatform-config-2.0.so.2
+0xb6334528  0xb6369554  Yes (*)     /lib/libnotification.so.0
+0xb631b2c4  0xb6328098  Yes (*)     /lib/libbundle.so.0
+0xb630052c  0xb630d9f8  Yes (*)     /lib/libcapi-appfw-app-control.so.0
+0xb62f1fe4  0xb62f4684  Yes (*)     /lib/libcapi-appfw-app-control-uri.so.0
+0xb62b7d28  0xb62dda34  Yes (*)     /lib/libesplusplayer.so
+0xb627fde0  0xb6286468  Yes         /lib/libresource-center-api.so.0
+0xb62784b8  0xb6278580  Yes (*)     /lib/libtizen-extension-client.so.0
+0xb62417f0  0xb6263de4  Yes (*)     /lib/libtts.so
+0xb6234a8c  0xb6235580  Yes (*)     /lib/libttrace.so.1
+0xb621fad0  0xb622b808  Yes (*)     /lib/libdlog.so.0
+0xb621b468  0xb621b5bc  Yes (*)     /lib/libwayland-egl.so.1
+0xb6212278  0xb6216db8  Yes (*)     /lib/libwayland-client.so.0
+0xb620761c  0xb620abf4  Yes (*)     /lib/libdeviced.so.0.1.0
+0xb61e8814  0xb61fcc78  Yes (*)     /lib/libcapi-media-sound-manager.so.0
+0xb61893c8  0xb61d1894  Yes (*)     /lib/libpkgmgr-info.so.0
+0xb6085ec0  0xb60f3710  Yes (*)     /lib/libglib-2.0.so.0
+0xb6068104  0xb606a110  Yes (*)     /lib/libparcel.so.0
+0xb6040198  0xb6059cc4  Yes (*)     /lib/libecore_wl2.so.1
+0xb5fe35f8  0xb6024104  Yes (*)     /lib/libecore.so.1
+0xb5f890a8  0xb5fc45b4  Yes (*)     /lib/libefl.so.1
+0xb5f63300  0xb5f73468  Yes (*)     /lib/libeo.so.1
+0xb5f5a81c  0xb5f5c880  Yes (*)     /lib/libecore_file.so.1
+0xb5f033c0  0xb5f43140  Yes (*)     /lib/libeina.so.1
+0xb5eef838  0xb5ef0934  Yes (*)     /lib/libpthread.so.0
+0xb5eec590  0xb5eec7b4  Yes (*)     /lib/librt.so.1
+0xb5ee858c  0xb5ee9688  Yes (*)     /lib/libdl.so.2
+0xb5ecc508  0xb5ee03bc  Yes (*)     /lib/libjsoncpp.so.26
+0xb5e99f68  0xb5eb6544  Yes (*)     /lib/libtbm.so.1
+0xb5e84f44  0xb5e85108  Yes (*)     /lib/libcapi-base-common.so.0
+0xb5d6a0f0  0xb5e23c6c  Yes (*)     /lib/libstdc++.so.6
+0xb5c9e240  0xb5ccbd54  Yes (*)     /lib/libm.so.6
+0xb5c87210  0xb5c910f8  Yes (*)     /lib/libgcc_s.so.1
+0xb5b37080  0xb5c4c820  Yes         /lib/libc.so.6
+0xb5b105ec  0xb5b10b9c  Yes (*)     /lib/libcapi-system-resource.so.1
+0xb5a06658  0xb5acd010  Yes (*)     /lib/libgio-2.0.so.0
+0xb59a1e58  0xb59c8cd0  Yes (*)     /lib/libgobject-2.0.so.0
+0xb5994334  0xb5994424  Yes (*)     /lib/libcynara-uid.so.0
+0xb598d078  0xb598fe40  Yes (*)     /lib/libuuid.so.1
+0xb5988ab8  0xb5989544  Yes (*)     /lib/libunwind-ptrace.so.0
+0xb5963758  0xb596c0b0  Yes (*)     /lib/libunwind-arm.so.8
+0xb595e8ac  0xb595ee40  Yes (*)     /lib/libaul-blink.so.0
+0xb5952fec  0xb595a304  Yes (*)     /lib/libbuxton2.so.1
+0xb5933dc0  0xb594a444  Yes (*)     /lib/libsensor.so.10
+0xb59249f4  0xb592578c  Yes (*)     /lib/libboost_atomic.so.1.83.0
+0xb5914d98  0xb591dc54  Yes (*)     /lib/libz.so.1
+0xb5907158  0xb591062c  Yes (*)     /lib/libbz2.so.1
+0xb3aa32ac  0xb3aa3374  Yes (*)     /lib/libicudata.so.76
+0xb3939618  0xb3a64d00  Yes (*)     /lib/libicui18n.so.76
+0xb374fbe0  0xb37f703c  Yes (*)     /lib/libicuuc.so.76
 --Type <RET> for more, q to quit, c to continue without paging--
-Thread 4 (LWP 32160):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xb0ffe634, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1325406708, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb0ffe60c, mutex=0xb0ffe634, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xb0ffe60c, mutex=0xb0ffe634) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 3 (LWP 32159):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xb19d657c, futex_word@entry=0x56b504 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1315084972, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x56b504 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb19d6554, mutex=0xb19d657c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xb19d6554, mutex=0xb19d657c) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 2 (LWP 32157):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0x5a4230, futex_word@entry=0x0, expected=143541556, expected@entry=0, clockid=clockid@entry=5915108, abstime=abstime@entry=0x0, private=0, private@entry=5915144, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=5915108, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b90514 in __pthread_cond_wait_common (cond=0x5a4208, mutex=0x0, clockid=5915108, abstime=<optimized out>) at pthread_cond_wait.c:503
-#4  ___pthread_cond_timedwait64 (cond=0x5a4208, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
-#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
-#6  0x00446df4 in starboard::ConditionVariable::WaitTimed(long long) const ()
-#7  0x00446b0c in starboard::Semaphore::TakeWait(long long) ()
-#8  0x00446510 in starboard::Thread::WaitForJoin(long long) ()
-#9  0x00506a9c in starboard::shared::signal::SignalHandlerThread::Run() ()
-#10 0x00445dd0 in starboard::Thread::ThreadEntryPoint(void*) ()
-#11 0xb5b90eac in start_thread (arg=0xb21d7e60) at pthread_create.c:447
-#12 0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-
-Thread 1 (LWP 32128):
-#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
-#1  __futex_abstimed_wait_common (futex_word=0xbeffde94, futex_word@entry=0xbeffdcd8, expected=25264360, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1090527636, cancel=cancel@entry=true) at futex-internal.c:99
-#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xbeffdcd8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
-#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xbeffde6c, mutex=0xbeffde94, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
-#4  ___pthread_cond_wait (cond=0xbeffde6c, mutex=0xbeffde94) at pthread_cond_wait.c:618
-#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
-#6  0xaec06318 in ?? ()
+0xb3701da4  0xb3703258  Yes (*)     /lib/libapp-core-efl-cpp.so.1
+0xb36f0240  0xb36f97c4  Yes (*)     /lib/libapp-core-ui-cpp.so.1
+0xb36de37c  0xb36e2698  Yes (*)     /lib/libsessiond.so.0
+0xb36d434c  0xb36d9ec4  Yes (*)     /lib/libcynara-client.so.0
+0xb36ce51c  0xb36cf540  Yes (*)     /lib/libcynara-creds-self.so.0
+0xb36a3bc0  0xb36c5244  Yes (*)     /lib/libpkgmgr-client.so.0
+0xb36725e8  0xb3695074  Yes (*)     /lib/libpkgmgr_installer.so.0
+0xb364f55c  0xb364f830  Yes (*)     /lib/libcynara-session.so.0
+0xb3648674  0xb364a2fc  Yes (*)     /lib/libcynara-creds-pid.so.0
+0xb36162b0  0xb363b24c  Yes (*)     /lib/libpulse.so.0
+0xb35fa314  0xb3606b5c  Yes (*)     /lib/libdpm.so.0
+0xb35de110  0xb35ec0f0  Yes (*)     /lib/libnetwork.so.0
+0xb356a9a0  0xb35bf6d4  Yes (*)     /lib/libbluetooth-api.so.1
+0xb34dddc8  0xb354251c  Yes (*)     /lib/libsystemd.so.0
+0xb34ccc00  0xb34ce464  Yes (*)     /lib/libecore_input_evas.so.1
+0xb34c20f0  0xb34c6efc  Yes (*)     /lib/libeeze.so.1
+0xb3479658  0xb34aa774  Yes (*)     /lib/libssl.so.1.1
+0xb330f000  0xb3401a10  Yes (*)     /lib/libcrypto.so.1.1
+0xb32c47bc  0xb32c4cdc  Yes (*)     /lib/libecore_imf_evas.so.1
+0xb32bd228  0xb32c13dc  Yes (*)     /lib/libembryo.so.1
+0xb32b0870  0xb32b7bf8  Yes (*)     /lib/libecore_audio.so.1
+0xb32a71ac  0xb32aa3d8  Yes (*)     /lib/libecore_ipc.so.1
+0xb3232e08  0xb329e714  Yes (*)     /lib/libjpeg.so.8
+0xb320c690  0xb322b4d8  Yes (*)     /lib/libthorvg.so.0
+0xb31e4a28  0xb31fe354  Yes (*)     /lib/libpng16.so.16
+0xb31a7dd0  0xb31d8118  Yes (*)     /lib/librlottie.so.0
+0xb313b300  0xb3187854  Yes (*)     /lib/libfreetype.so.6
+0xb3108228  0xb31223f0  Yes (*)     /lib/libfontconfig.so.1
+0xb30e81d0  0xb30eb2d4  Yes (*)     /lib/libfribidi.so.0
+0xb30e2b8c  0xb30e4618  Yes (*)     /lib/libhyphen.so.0
+0xb301bce8  0xb30be0f0  Yes (*)     /lib/libharfbuzz.so.0
+0xb300df80  0xb300f144  Yes (*)     /lib/libiniparser.so.4
+0xb2ff14e8  0xb3005d5c  Yes (*)     /lib/librpc-port.so.1
+0xb2fb1138  0xb2fd5780  Yes (*)     /lib/libsecurity-manager-client.so.3
+0xb2ee0458  0xb2f8f49c  Yes (*)     /lib/libsqlite3.so.0
+0xb2ec1408  0xb2ed0a38  Yes (*)     /lib/libtizen-core.so.0
+0xb2e9f1a0  0xb2eafba0  Yes (*)     /lib/libjson-glib-1.0.so.0
+0xb2dc9e90  0xb2e5ea48  Yes (*)     /lib/libgstreamer-1.0.so.0
+0xb2d99254  0xb2da07bc  Yes (*)     /lib/libespplayer-core.so
+0xb2d29154  0xb2d7ea64  Yes (*)     /lib/libresource-manager.so.0
+0xb2ccac24  0xb2ce2bd4  Yes (*)     /lib/libresource-information.so.0
+0xb2c0e430  0xb2c95624  Yes (*)     /lib/libxml2.so.2
+0xb2be6000  0xb2bec2a8  Yes (*)     /lib/libffi.so.8
+0xb2bda8b4  0xb2be0d7c  Yes (*)     /lib/libsyscommon.so.5.0.0
+0xb2bb7bac  0xb2bc4c34  Yes (*)     /lib/libmmfsound.so.0
+0xb2bad608  0xb2bb20c4  Yes (*)     /lib/libminizip.so.1
+0xb2b3ac90  0xb2b86e80  Yes (*)     /lib/libpcre2-8.so.0
+0xb2b2e610  0xb2b34664  Yes (*)     /lib/libwayland-server.so.0
+0xb2aeffd0  0xb2b05b40  Yes (*)     /lib/libxkbcommon.so.0
+0xb2ae5d90  0xb2ae74d4  Yes (*)     /lib/libwayland-cursor.so.0
+--Type <RET> for more, q to quit, c to continue without paging--
+0xb2ae2540  0xb2ae2608  Yes (*)     /lib/libtizen-launch-client.so.0
+0xb2ad9580  0xb2addabc  Yes (*)     /lib/libwayland-tbm-client.so.0
+0xb2ad36d0  0xb2ad3b14  Yes (*)     /lib/libwayland-egl-tizen.so.1
+0xb2ad04a0  0xb2ad0568  Yes (*)     /lib/libtizen-policy-ext-client.so.0
+0xb2acd528  0xb2acd5f0  Yes (*)     /lib/libwtz-foreign-client.so.0
+0xb2aca400  0xb2aca4c8  Yes (*)     /lib/libwtz-shell-client.so.0
+0xb2ac7570  0xb2ac7638  Yes (*)     /lib/libwtz-screen-client.so.0
+0xb2ac4644  0xb2ac470c  Yes (*)     /lib/libwtz-video-shell-client.so.0
+0xb2ac13f4  0xb2ac14bc  Yes (*)     /lib/librelative-pointer-unstable-v1-client.so.0
+0xb2abc584  0xb2abc64c  Yes (*)     /lib/libpointer-constraints-unstable-v1-client.so.0
+0xb2ab94f0  0xb2ab95b8  Yes (*)     /lib/libwtz-blur-client.so.0
+0xb2ab637c  0xb2ab6444  Yes (*)     /lib/libpointer-warp-v1-client.so.0
+0xb2aafe8c  0xb2ab32b8  Yes (*)     /usr/lib/hal/libhal-api-tbm.so.1
+0xb2aa2db8  0xb2aaafcc  Yes (*)     /lib/libdrm.so.2
+0xb2a242c0  0xb2a94938  Yes (*)     /lib/libpixman-1.so.0
+0xb2a1bdc8  0xb2a1ca88  Yes (*)     /lib/libgmodule-2.0.so.0
+0xb29e9df0  0xb2a0fe34  Yes (*)     /lib/libmount.so.1
+0xb29d4cf8  0xb29dbfc4  Yes (*)     /lib/libsensord-shared.so
+0xb29c7ac8  0xb29c7f88  Yes (*)     /lib/libapp-core-rotation-cpp.so.1
+0xb29c17cc  0xb29c4998  Yes (*)     /usr/lib/libcynara-client-commons.so.0
+0xb2985b88  0xb29b3f1c  Yes (*)     /usr/lib/libcynara-commons.so.0
+0xb295feb0  0xb296214c  Yes (*)     /usr/lib/libcynara-creds-commons.so.0
+0xb2912ba8  0xb2949574  Yes (*)     /usr/lib/pulseaudio/libpulsecommon-15.0.so
+0xb28e52e8  0xb28fb1d0  Yes (*)     /lib/libklay.so.0
+0xb28b7ac0  0xb28cb0a4  Yes (*)     /lib/liblzma.so.5
+0xb28aeca0  0xb28b21a0  Yes (*)     /lib/libcap.so.2
+0xb288d810  0xb28a4654  Yes (*)     /lib/libudev.so.1
+0xb27f6690  0xb287ee4c  Yes (*)     /lib/libturbojpeg.so.0
+0xb27dcfc0  0xb27eed8c  Yes (*)     /lib/libexpat.so.1
+0xb27d7f38  0xb27d886c  Yes (*)     /lib/libcynara-creds-socket.so.0
+0xb2738160  0xb27bc298  Yes (*)     /usr/lib/libsecurity-manager-commons.so.1
+0xb26cd918  0xb26f4b40  Yes (*)     /lib/libtrackrenderer.so
+0xb26a8d78  0xb26af128  Yes (*)     /lib/libjson-c.so.5
+0xb26a1af0  0xb26a28ac  Yes (*)     /lib/libmmfsoundcommon.so.0
+0xb269d094  0xb269dea0  Yes (*)     /lib/libpulse-simple.so.0
+0xb26873a8  0xb2690090  Yes (*)     /usr/lib/hal/libhal-api-common.so.0
+0xb2661860  0xb267adfc  Yes (*)     /lib/libblkid.so.1
+0xb26166e0  0xb2649d44  Yes (*)     /lib/libsndfile.so.1
+0xb25faaf8  0xb260d88c  Yes (*)     /usr/lib/libcynara-admin.so.0
+0xb25ea82c  0xb25f0140  Yes (*)     /usr/lib/libsecurity-privilege-manager.so.1
+0xb25e2448  0xb25e53dc  Yes (*)     /usr/lib/libacl.so.1
+0xb25db84c  0xb25de060  Yes (*)     /usr/lib/libsmack.so.1
+0xb25a5fc8  0xb25b7d64  Yes (*)     /usr/lib/libcrypt.so.1
+0xb252e3f8  0xb257f288  Yes (*)     /lib/libgstvideo-1.0.so.0
+0xb251091c  0xb2514a0c  Yes (*)     /lib/libgstallocators-1.0.so.0
+0xb2509a28  0xb250aa0c  Yes (*)     /lib/libmmfdisplay_interface.so.0
+0xb24fa7d8  0xb250362c  Yes (*)     /lib/libcapi-media-tool.so.0
+0xb24ea3c0  0xb24f2ee4  Yes (*)     /lib/libgstapp-1.0.so.0
+0xb24c67e0  0xb24d5a64  Yes (*)     /lib/libvorbis.so.0
+0xb24822d8  0xb24b41fc  Yes (*)     /lib/libopus.so.0
+--Type <RET> for more, q to quit, c to continue without paging--
+0xb247b418  0xb247cb00  Yes (*)     /lib/libogg.so.0
+0xb2460ad8  0xb2474d4c  Yes (*)     /usr/lib/libcynara-storage.so.0
+0xb244df54  0xb244f5c0  Yes (*)     /lib/libattr.so.1
+0xb23f1380  0xb243a0b0  Yes (*)     /lib/libgstbase-1.0.so.0
+0xb6fc9810  0xb6fca6b4  Yes (*)     /usr/lib/libcapi-system-resource-plugin.so
+0xb6fc5f28  0xb6fc63bc  Yes (*)     /usr/lib/cynara/plugin/client/liblicense-manager-plugin-client.so
+0xb2201630  0xb237f5bc  Yes (*)     /usr/lib/libCOREGL.so
+0xb21da0e0  0xb21dfd3c  Yes (*)     /lib/libnss_compat.so.2
+0xb21e6cb0  0xb21e70b4  Yes (*)     /usr/lib/ecore_wl2/engines/dmabuf/v-1.25/module.so
+0xb1122090  0xb1137d08  Yes         /hal/lib/driver/libEGL.so
+0xa6741f60  0xa6cf64fe  Yes         /hal/lib/libgallium-24.3.4.so
+0xb07dea04  0xb07ea9a8  Yes         /hal/lib/libglapi.so.0
+0xb07b0318  0xb07c7818  Yes (*)     /lib/libtpl-egl.so.1
+0xb07a0b28  0xb07a7634  Yes (*)     /lib/libtdm-client.so.0
+0xb078ed18  0xb07977d0  Yes (*)     /lib/libwayland-tbm-server.so.0
+0xb11093f0  0xb11094b8  Yes (*)     /lib/libtizen-surface-client.so.0
+0xb1106430  0xb11064f8  Yes (*)     /lib/libpresentation-time-client.so.0
+0xb11034a0  0xb1103568  Yes (*)     /lib/liblinux-explicit-synchronization-unstable-v1-client.so.0
+0xb1118aac  0xb1119aa4  Yes         /hal/lib/driver/libGLESv1_CM.so
+0xb11124cc  0xb1114ca8  Yes         /hal/lib/driver/libGLESv2.so
+0xb0782f60  0xb078683c  Yes (*)     /hal/lib/libhal-backend-tbm.so
+(*): Shared library is missing debugging information.
