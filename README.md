@@ -1,958 +1,270 @@
-root:/tmp> pid=$(pgrep cobalt); if [ -n "$pid" ]; then cat /proc/$pid/maps | grep libGLESv2; else echo "Cobalt not running"; fi
-afd30000-afd37000 r-xp 00000000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
-afd37000-afd46000 ---p 00007000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
-afd46000-afd47000 r--p 00006000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
-afd47000-afd48000 rw-p 00007000 b3:0a 286        /hal/lib/driver/libGLESv2.so.2.0.0
-b639e000-b63db000 r-xp 00000000 b3:02 389        /usr/lib/libGLESv2.so.2.0
-b63db000-b63dc000 r--p 0003c000 b3:02 389        /usr/lib/libGLESv2.so.2.0
-b63dc000-b63dd000 rw-p 0003d000 b3:02 389        /usr/lib/libGLESv2.so.2.0
-
-
-你现在的问题本质是：
-
-只升级了部分 Mesa 组件
-
-导致：
-
-frontend (libEGL/libGLESv2)
-
-和：
-
-backend (gallium)
-
-不是同一 ABI。
-
-正确升级 Mesa 的原则
-
-Mesa 必须：
-
-整套替换
-
-包括：
-
-libEGL.so
-libGLESv2.so
-libglapi.so
-gallium
-DRI drivers
-GBM
-
-全部来自：
-
-同一次 Mesa24 build
-你现在系统里的 Mesa 相关库
-
-从你的 info sharedlibrary：
-
-关键是：
-
-/lib/libEGL.so.1
-/lib/libGLESv2.so.2
-/hal/lib/driver/libEGL.so
-/hal/lib/driver/libGLESv2.so
-/hal/lib/libgallium-24.3.4.so
-/hal/lib/libglapi.so.0
-
-这些必须统一版本。
-
-Tizen 上最安全的方法
-不要覆盖系统库
-
-而是：
-
-建一个 Mesa24 runtime 目录
-
-例如：
-
-/opt/mesa24/
-
-里面放：
-
-/opt/mesa24/lib/libEGL.so
-/opt/mesa24/lib/libGLESv2.so
-/opt/mesa24/lib/libglapi.so
-/opt/mesa24/lib/libgallium.so
-第一步：编译 Mesa24
-
-建议：
-
-meson setup build \
-  -Dplatforms=wayland \
-  -Dgallium-drivers=swrast \
-  -Dvulkan-drivers="" \
-  -Degl=enabled \
-  -Dgles2=enabled \
-  -Dshared-glapi=enabled \
-  --prefix=/opt/mesa24
-
-然后：
-
-ninja -C build
-ninja -C build install
-第二步：确认 Mesa24 库完整
-
-应该有：
-
-ls /opt/mesa24/lib
-
-至少：
-
-libEGL.so
-libGLESv2.so
-libglapi.so
-libgallium*.so
-第三步：用 LD_LIBRARY_PATH 强制全套 Mesa24
-
-启动前：
-
-export LD_LIBRARY_PATH=/opt/mesa24/lib:$LD_LIBRARY_PATH
-
-非常关键。
-
-这样：
-
-libEGL/libGLESv2/libglapi/gallium
-
-会一起加载。
-
-第四步：验证实际加载的库
-
-运行：
-
-LD_DEBUG=libs ./cobalt_launcher
-
-检查：
-
-libEGL.so
-libGLESv2.so
-
-是不是来自：
-
-/opt/mesa24/lib
-
-而不是：
-
-/lib/
-第五步：确认 gallium 也是同版本
-
-必须看到：
-
-libgallium-24.x.so
-
-来自：
-
-/opt/mesa24/lib
-第六步：避免 Tizen HAL 混入旧库
-
-Tizen 很危险的一点：
-
-/hal/lib/driver/libEGL.so
-
-可能内部：
-
-dlopen("libgallium.so")
-
-或者直接链接旧 glapi。
-
-所以：
-
-你必须让：
-readelf -d /hal/lib/driver/libEGL.so
-
-看到：
-
-NEEDED -> libglapi.so
-
-也是 Mesa24。
-
-最容易成功的方法
-
-其实是：
-
-整个 /hal/lib/driver/
-
-全部替换成 Mesa24 build。
-
-包括：
-
-libEGL.so
-libGLESv2.so
-libglapi.so
-
-而不是只换 gallium。
-
-但注意：
-
-Tizen/Samsung 有 vendor HAL wrapper。
-
-这些：
-
-libtpl-egl.so
-libhal-backend-tbm.so
-
-可能：
-
-假设 Mesa23 ABI
-调 Mesa internals
-
-所以：
-
-即使全 Mesa24
-
-仍然可能 crash
-
-真正正确做法（工业界）
-
-必须一起 rebuild：
-
-Mesa24
-HAL wrapper
-TBM backend
-Cobalt
-你现在先做这个
-
-执行：
-
-LD_DEBUG=libs ./cobalt_launcher 2>&1 | grep -E "EGL|GLES|gallium|glapi"
-
-看：
-
-到底哪些库来自哪里
-
-这一步最关键。
-
-还有一个现实问题
-
-你的：
-
-Cobalt 25.lts
-
-是 Chromium M80 时代。
-
-Mesa24 是 2025 的。
-
-跨度太大。
-
-所以：
-
-即使 ABI 统一
-
-也可能有 runtime incompatibility
-
-尤其：
-
-EGL sync
-dma-buf modifiers
-threaded GL
-Skia GLES assumptions
-所以最稳方案依然是
-Mesa 23.3.3
-
-因为：
-
-Samsung Evergreen stack
-
-明显是按 Mesa23 验证的。
-
-非要更新到mesa 24版本 给出详细的步骤
-
-你现在的情况是：
-
-Cobalt 原来运行在旧 GPU stack（Mesa 23.x + Samsung HAL）
-你强行替换成了 Mesa 24.3.4
-/hal/lib/libgallium-24.3.4.so 已经加载
-但 libGLESv2.so 仍然链接到 /lib/libGLESv2.so
-最终 Rasterizer 线程 SIGSEGV
-
-这已经不是单独替换一个 .so 能解决的问题了。
-
-Mesa 24 需要：
-
-EGL
-GLES
-gbm
-drm
-glapi
-dri driver
-loader
-LLVM（如果开启）
-Samsung tbm/wayland bridge
-
-全部 ABI 一致。
-
-你现在是“混合栈”：
-
-Mesa24 gallium
-+
-系统旧 libEGL/libGLES
-+
-旧 HAL
-+
-旧 loader
-
-这一定会崩。
-
-你必须整套替换。
-
-一、正确目标结构
-
-你最终要变成：
-
-/hal/lib/libEGL.so                -> Mesa24
-/hal/lib/libGLESv2.so             -> Mesa24
-/hal/lib/libglapi.so              -> Mesa24
-/hal/lib/libgallium-24.3.4.so     -> Mesa24
-/usr/lib/dri/*.so                 -> Mesa24
-
-并且：
-
-LD_LIBRARY_PATH=/hal/lib
-LIBGL_DRIVERS_PATH=/usr/lib/dri
-
-而不是：
-
-/lib/libEGL.so
-/lib/libGLESv2.so
-二、最关键的问题
-
-你的系统：
-
-/lib/libGLESv2.so
-
-是三星原厂 GLES wrapper。
-
-它：
-
-不是 Mesa 24 编译的
-ABI 不兼容 Mesa24 gallium
-调 Mesa24 时参数布局变了
-导致 Rasterizer stack corruption
-
-这就是：
-
-Backtrace stopped: corrupt stack
-
-的根本原因。
-
-三、正确做法（完整替换）
-STEP 1 编译 Mesa 24
-
-必须启用：
-
--Degl=enabled
--Dgles2=enabled
--Dshared-glapi=enabled
--Dgbm=enabled
--Dplatforms=wayland
--Dgallium-drivers=swrast
--Ddri-drivers=
-
-例如：
-
-meson setup build \
-  --prefix=/opt/mesa24 \
-  -Degl=enabled \
-  -Dgles2=enabled \
-  -Dshared-glapi=enabled \
-  -Dgbm=enabled \
-  -Dplatforms=wayland \
-  -Dgallium-drivers=swrast \
-  -Ddri-drivers=
-
-然后：
-
-ninja -C build
-ninja -C build install
-STEP 2 拷贝完整 runtime
-
-不要只拷一个 gallium。
-
-要整个：
-
-cp /opt/mesa24/lib/libEGL.so* /hal/lib/
-cp /opt/mesa24/lib/libGLESv2.so* /hal/lib/
-cp /opt/mesa24/lib/libglapi.so* /hal/lib/
-cp /opt/mesa24/lib/libgbm.so* /hal/lib/
-
-mkdir -p /usr/lib/dri
-cp /opt/mesa24/lib/dri/* /usr/lib/dri/
-STEP 3 修正 symlink
-
-现在你系统：
-
-libGLESv2.so -> /lib/libGLESv2.so
-
-这是错误的。
-
-必须改：
-
-cd /hal/lib
-
-rm libGLESv2.so
-ln -s libGLESv2.so.2 libGLESv2.so
-
-rm libEGL.so
-ln -s libEGL.so.1 libEGL.so
-
-检查：
-
-readlink -f libGLESv2.so
-
-必须输出：
-
-/hal/lib/libGLESv2.so.2
-
-不能是：
-
-/lib/libGLESv2.so
-STEP 4 强制 Cobalt 使用 Mesa24
-
-启动前：
-
-export LD_LIBRARY_PATH=/hal/lib
-export LIBGL_DRIVERS_PATH=/usr/lib/dri
-export EGL_DRIVER=/hal/lib/libEGL.so
-
-然后：
-
-LD_DEBUG=libs ./cobalt_launcher
-
-检查：
-
-必须看到：
-
-loading /hal/lib/libEGL.so
-loading /hal/lib/libGLESv2.so
-loading /hal/lib/libgallium-24.3.4.so
-
-不能看到：
-
-/lib/libGLESv2.so
-/lib/libEGL.so
-STEP 5 检查 dri driver
-
-Mesa24 还会加载：
-
-/usr/lib/dri/swrast_dri.so
-
-或者：
-
-kms_swrast_dri.so
-
-没有它也会 crash。
-
-检查：
-
-ls /usr/lib/dri
-STEP 6 禁止旧 Samsung GLES
-
-非常关键。
-
-有些 Tizen loader 会 preload：
-
-/lib/libGLESv2.so
-
-你必须：
-
-方法1（推荐）
-
-重命名：
-
-mv /lib/libGLESv2.so /lib/libGLESv2.so.bak
-mv /lib/libEGL.so /lib/libEGL.so.bak
-
-然后：
-
-ln -s /hal/lib/libGLESv2.so /lib/libGLESv2.so
-ln -s /hal/lib/libEGL.so /lib/libEGL.so
-STEP 7 检查 ABI
-
-最重要：
-
-readelf -Ws /hal/lib/libGLESv2.so | grep glBindTexture
-
-以及：
-
-readelf -Ws /lib/libGLESv2.so
-
-如果符号版本不一致：
-
-GLIBCXX
-GLAPI
-EGL
-
-一定 crash。
-
-四、你现在为什么 crash
-
-你现在：
-
-Cobalt
- -> /lib/libGLESv2.so (旧)
-     -> Mesa24 gallium
-
-相当于：
-
-旧 frontend
-+
-新 backend
-
-Mesa 24 修改了：
-
-dispatch table
-context struct
-glapi layout
-TLS layout
-
-所以：
-
-函数参数错位
-栈破坏
-SIGSEGV
-
-这是标准 ABI mismatch。
-
-五、为什么 Mesa 23 正常
-
-Mesa 23：
-
-struct gl_context
-
-布局还和三星 wrapper 兼容。
-
-Mesa24：
-
-glthread 改了
-dispatch 改了
-loader 改了
-glapi 改了
-
-三星 wrapper 没同步。
-
-所以：
-
-23 OK
-24 crash
-六、最稳方案（推荐）
-
-其实最稳的是：
-
-不替换系统 EGL/GLES
-
-而是：
-
-只替换 dri driver
-
-或者：
-
-使用 llvmpipe standalone
-
-否则 Tizen 整个 graphics stack 都可能炸。
-
-七、你现在下一步
-
-你现在最应该执行：
-
-ldd /usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher | grep GLES
-
-以及：
-
-readlink -f /hal/lib/libGLESv2.so
-readlink -f /lib/libGLESv2.so
-
-如果你愿意，我还能继续帮你：
-
-给你 Mesa24 最小稳定配置
-给你 Tizen 专用 meson 配置
-给你“只替换软件 rasterizer”的安全方案
-给你如何避免三星 HAL 崩溃
-给你如何让 Cobalt 兼容 Mesa24 的 patch
-教你定位 0xaf446f90 属于哪个 Mesa 符号
-教你生成带符号 Mesa 调试版
-好的
-
-下面给你一套 Tizen/Cobalt → Mesa 24.3.4 完整稳定迁移方案。
-目标：
-
-Cobalt
-  ↓
-Mesa24 EGL/GLES
-  ↓
-Mesa24 Gallium
-  ↓
-llvmpipe / swrast
-
-避免：
-
-Samsung GLES wrapper
-+
-Mesa24 backend
-
-这种 ABI 混搭。
-
-一、推荐最终结构
-
-最终你应该有：
-
-/hal/lib/
-    libEGL.so
-    libEGL.so.1
-    libGLESv2.so
-    libGLESv2.so.2
-    libglapi.so.0
-    libgbm.so.1
-    libgallium-24.3.4.so
-
-/usr/lib/dri/
-    swrast_dri.so
-    kms_swrast_dri.so
-
-并且：
-
-LD_LIBRARY_PATH=/hal/lib
-LIBGL_DRIVERS_PATH=/usr/lib/dri
-二、编译 Mesa 24（最重要）
-
-不要直接用 PC Linux 默认配置。
-
-Tizen 上必须尽量精简。
-
-1. 下载 Mesa
-
-使用：
-
-Mesa 官方下载
-
-例如：
-
-wget https://archive.mesa3d.org/mesa-24.3.4.tar.xz
-tar xf mesa-24.3.4.tar.xz
-cd mesa-24.3.4
-2. 安装依赖
-
-需要：
-
-meson
-ninja
-python3
-pkg-config
-libdrm
-wayland
-expat
-zlib
-3. 最关键 Meson 配置
-
-这是 Tizen/Cobalt 最稳配置：
-
-meson setup build \
-  --prefix=/opt/mesa24 \
-  -Dbuildtype=release \
-  -Degl=enabled \
-  -Dgles1=disabled \
-  -Dgles2=enabled \
-  -Dopengl=false \
-  -Dgbm=enabled \
-  -Dshared-glapi=enabled \
-  -Dglx=disabled \
-  -Dllvm=disabled \
-  -Dosmesa=false \
-  -Dplatforms=wayland \
-  -Dgallium-drivers=swrast \
-  -Dvulkan-drivers= \
-  -Ddri-drivers= \
-  -Dxmlconfig=disabled
-三、为什么这样配置
-
-因为：
-
-禁止：
-OpenGL desktop
-GLX
-Vulkan
-LLVM
-
-避免：
-
-ABI 更复杂
-额外符号
-loader 冲突
-Samsung HAL 崩溃
-四、编译
-ninja -C build
-ninja -C build install
-
-最终：
-
-/opt/mesa24/lib
-
-会生成：
-
-libEGL.so
-libGLESv2.so
-libglapi.so
-libgbm.so
-libgallium-24.3.4.so
-dri/swrast_dri.so
-五、替换系统库（关键）
-1. 备份旧库
-mkdir /backup_gles
-
-cp /lib/libEGL.so* /backup_gles/
-cp /lib/libGLESv2.so* /backup_gles/
-2. 拷贝 Mesa24
-cp /opt/mesa24/lib/libEGL.so* /hal/lib/
-cp /opt/mesa24/lib/libGLESv2.so* /hal/lib/
-cp /opt/mesa24/lib/libglapi.so* /hal/lib/
-cp /opt/mesa24/lib/libgbm.so* /hal/lib/
-cp /opt/mesa24/lib/libgallium-24.3.4.so /hal/lib/
-3. 拷贝 DRI
-mkdir -p /usr/lib/dri
-
-cp /opt/mesa24/lib/dri/* /usr/lib/dri/
-六、修正符号链接（非常关键）
-
-进入：
-
-cd /hal/lib
-
-执行：
-
-rm -f libEGL.so
-ln -s libEGL.so.1 libEGL.so
-
-rm -f libGLESv2.so
-ln -s libGLESv2.so.2 libGLESv2.so
-
-检查：
-
-readlink -f libGLESv2.so
-
-必须输出：
-
-/hal/lib/libGLESv2.so.2
-
-不是：
-
-/lib/libGLESv2.so
-七、最关键：替换系统 frontend
-
-你现在 crash 的根本原因：
-
-/lib/libGLESv2.so
-
-仍然是三星旧 wrapper。
-
-必须替换。
-
-方法（推荐）
-mv /lib/libEGL.so /lib/libEGL.so.bak
-mv /lib/libGLESv2.so /lib/libGLESv2.so.bak
-
-然后：
-
-ln -s /hal/lib/libEGL.so /lib/libEGL.so
-ln -s /hal/lib/libGLESv2.so /lib/libGLESv2.so
-八、验证加载路径
-
-启动前：
-
-export LD_LIBRARY_PATH=/hal/lib
-export LIBGL_DRIVERS_PATH=/usr/lib/dri
-export EGL_LOG_LEVEL=debug
-
-运行：
-
-LD_DEBUG=libs ./cobalt_launcher
-
-你必须看到：
-
-loading /hal/lib/libEGL.so
-loading /hal/lib/libGLESv2.so
-loading /hal/lib/libgallium-24.3.4.so
-loading /usr/lib/dri/swrast_dri.so
-
-不能看到：
-
-/lib/libGLESv2.so
-/lib/libEGL.so
-九、验证 Mesa 是否真的工作
-
-运行：
-
-strings /hal/lib/libgallium-24.3.4.so | grep Mesa
-
-应该：
-
-Mesa 24.3.4
-十、定位 Rasterizer 崩溃地址
-
-你现在：
-
-0xaf446f90
-
-没有符号。
-
-需要：
-
-addr2line -e /hal/lib/libgallium-24.3.4.so 0xaf446f90
-
-但地址是运行时地址。
-
-先：
-
-info proc mappings
-
-找到：
-
-libgallium-24.3.4.so base
-
-比如：
-
-0xaf300000
-
-然后：
-
-python3
->>> hex(0xaf446f90 - 0xaf300000)
-
-得到 offset：
-
-0x146f90
-
-再：
-
-addr2line -f -C \
-  -e /hal/lib/libgallium-24.3.4.so \
-  0x146f90
-
-就能知道：
-
-崩在哪个 Mesa 函数
-十一、推荐调试版 Mesa
-
-重新编译：
-
--Dbuildtype=debug
--Db_ndebug=false
-
-然后：
-
-export LIBGL_DEBUG=verbose
-export MESA_DEBUG=1
-
-Mesa 会打印：
-
-context creation
-shader
-dispatch
-loader
-
-非常有用。
-
-十二、Cobalt 最稳配置
-
-如果只是为了跑：
-
-推荐：
-
-export GALLIUM_DRIVER=llvmpipe
-
-或者：
-
-export LIBGL_ALWAYS_SOFTWARE=1
-
-避免：
-
-Samsung GPU HAL
-
-继续参与。
-
-十三、最可能最终遇到的问题
-1. TLS ABI mismatch
-
-Mesa24 修改了：
-
-glapi TLS
-
-旧 loader 会崩。
-
-解决：
-
-必须 frontend/backend 同版本。
-
-2. Wayland buffer ABI mismatch
-
-Samsung tbm 与 Mesa24 gbm 可能不兼容。
-
-解决：
-
-软件渲染。
-
-3. pthread wrapper 崩溃
-
-你日志里的：
-
-__abi_wrap_pthread_cond_wait
-
-已经说明：
-
-Tizen 对 pthread 做了 ABI 包装。
-
-Mesa24 某些线程模型可能不兼容。
-
-解决：
-
--Dllvm=disabled
-
-非常重要。
-
-十四、真正推荐的方案（生产环境）
-
-实际上：
-
-不要全局替换系统 GLES。
-
-最好：
-
-方法 A（推荐）
-
-只对 Cobalt：
-
-LD_LIBRARY_PATH=/hal/lib ./cobalt_launcher
-方法 B
-
-用 chroot/container 单独 Mesa24 runtime。
-
-十五、下一步建议
-
-你现在下一步应该：
-
-1
-
-检查：
-
-readlink -f /lib/libGLESv2.so
-readlink -f /hal/lib/libGLESv2.so
-2
-
-检查：
-
-LD_DEBUG=libs ./cobalt_launcher 2>&1 | grep GLES
-3
-
-检查：
-
-LD_DEBUG=libs ./cobalt_launcher 2>&1 | grep gallium
-4
-
-给我：
-
-info proc mappings
-
-我可以直接帮你：
-
-算 crash offset
-定位 Mesa 崩溃函数
-判断是 loader 崩
-还是 glapi 崩
-还是 dri driver 崩
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from /usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher...
+Reading symbols from /usr/lib/debug/usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher.debug...
+(gdb) r
+Starting program: /usr/apps/com.samsung.tv.cobalt/bin/cobalt_launcher
+warning: File "/usr/lib/libthread_db.so.1" auto-loading has been declined by your `auto-load safe-path' set to "$debugdir:$datadir/auto-load".
+To enable execution of this file add
+        add-auto-load-safe-path /usr/lib/libthread_db.so.1
+line to your configuration file "/root/.gdbinit".
+To completely disable this security protection add
+        set auto-load safe-path /
+line to your configuration file "/root/.gdbinit".
+For more information about this security protection see the
+"Auto-loading safe path" section in the GDB manual.  E.g., run from the shell:
+        info "(gdb)Auto-loading safe path"
+warning: Unable to find libthread_db matching inferior's thread library, thread debugging will not be available.
+Traceback (most recent call last):
+  File "/usr/share/gdb/auto-load/usr/lib/libgstreamer-1.0.so.0.2411.0-gdb.py", line 9, in <module>
+    from gst_gdb import register
+  File "/usr/share/gstreamer-1.0/gdb/gst_gdb.py", line 26, in <module>
+    from glib_gobject_helper import g_type_to_name, g_type_name_from_instance, \
+  File "/usr/share/gstreamer-1.0/gdb/glib_gobject_helper.py", line 96
+    return gdb.parse_and_eval(f"g_type_name({gtype})").string()
+                                                    ^
+SyntaxError: invalid syntax
+[New LWP 13918]
+[13889:13889:19700103,060707.918297:INFO crashpad_client_linux.cc:333] Added evergreen info: --evergreen-information=0x5a8960
+[13889:13889:19700103,060707.919769:INFO crashpad_client_linux.cc:96] Added annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
+[New LWP 13920]
+[New LWP 13921]
+[New LWP 13922]
+[New LWP 13923]
+[New LWP 13925]
+[New LWP 13924]
+[New LWP 13926]
+[New LWP 13927]
+[13889:13889:19700103,060707.932649:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=user_agent_string=Mozilla/5.0 (Tizen; /6.0/2025.30.1034943) Cobalt/25.lts.30.1034943-qa (unlike Gecko) v8/8.8.278.17-jit gles Evergreen/5.30.2 Evergreen-Full Evergreen-Compressed Starboard/16, Samsung_TV_PONTUSM_2021/T-NKM2AKUC (Samsung, QAQ80)
+[13889:13889:19700103,060707.932708:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=prod=Cobalt_Evergreen
+[13889:13889:19700103,060707.932736:INFO crashpad_client_linux.cc:85] Updated annotation: --annotation=ver=5.30.2
+[New LWP 13928]
+[New LWP 13929]
+[New LWP 13930]
+[New LWP 13931]
+[New LWP 13932]
+[New LWP 13933]
+[New LWP 13934]
+[New LWP 13935]
+[New LWP 13950]
+[New LWP 13951]
+[New LWP 13952]
+
+Thread 21 "Rasterizer" received signal SIGSEGV, Segmentation fault.
+[Switching to LWP 13952]
+0xaf446f90 in ?? ()
+(gdb) bt
+#0  0xaf446f90 in ?? ()
+#1  0xaf655b10 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) thread apply all bt
+
+Thread 21 (LWP 13952):
+#0  0xaf446f90 in ?? ()
+#1  0xaf655b10 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 20 (LWP 13951):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0x5f6560, futex_word@entry=0xa749e344 <pthread_cond_wait@got.plt>, expected=2784704420, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=6251832, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xa749e344 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0x5f6538, mutex=0x5f6560, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0x5f6538, mutex=0x5f6560) at pthread_cond_wait.c:618
+#5  0xa6c7c21a in cnd_wait (cond=<optimized out>, mtx=<optimized out>) at ../src/c11/impl/threads_posix.c:111
+#6  0xa6c63148 in util_queue_thread_func (input=<optimized out>) at ../src/util/u_queue.c:275
+#7  0xb5b90eac in start_thread (arg=0xa5fb3e60) at pthread_create.c:447
+#8  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 19 (LWP 13950):
+#0  0xb5bf5a18 in __GI___poll (fds=0x616f10, nfds=7, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  __GI___poll (fds=0x616f10, nfds=7, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
+#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
+#3  0xb60b182e in g_main_loop_run () from /lib/libglib-2.0.so.0
+#4  0xafdb36e6 in ?? () from /lib/libtpl-egl.so.1
+#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
+#6  0xb5b90eac in start_thread (arg=0xa68f5e60) at pthread_create.c:447
+#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 18 (LWP 13935):
+#0  0xb5bf5a18 in __GI___poll (fds=0x60fe98, nfds=2, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  __GI___poll (fds=0x60fe98, nfds=2, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
+#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
+#3  0xb60b182e in g_main_loop_run () from /lib/libglib-2.0.so.0
+#4  0xb5aab20a in ?? () from /lib/libgio-2.0.so.0
+#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
+#6  0xb5b90eac in start_thread (arg=0xa7cd0e60) at pthread_create.c:447
+#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 17 (LWP 13934):
+#0  0xb5bf5a18 in __GI___poll (fds=0xb0601c88, nfds=1, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  __GI___poll (fds=0xb0601c88, nfds=1, timeout=-1) at ../sysdeps/unix/sysv/linux/poll.c:26
+#2  0xb60b1278 in ?? () from /lib/libglib-2.0.so.0
+#3  0xb60b164c in g_main_context_iteration () from /lib/libglib-2.0.so.0
+#4  0xb60b1674 in ?? () from /lib/libglib-2.0.so.0
+#5  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
+#6  0xb5b90eac in start_thread (arg=0xa84d1e60) at pthread_create.c:447
+#7  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 16 (LWP 13933):
+#0  syscall () at ../sysdeps/unix/sysv/linux/arm/syscall.S:37
+#1  0xb60f29d4 in g_cond_wait () from /lib/libglib-2.0.so.0
+#2  0xb6089626 in ?? () from /lib/libglib-2.0.so.0
+#3  0xb60d0b20 in ?? () from /lib/libglib-2.0.so.0
+#4  0xb60d0532 in ?? () from /lib/libglib-2.0.so.0
+#5  0xb5b90eac in start_thread (arg=0xa8cd2e60) at pthread_create.c:447
+#6  0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 15 (LWP 13932):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xa94d358c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1454557852, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xa94d3564, mutex=0xa94d358c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xa94d3564, mutex=0xa94d358c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 14 (LWP 13931):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xa9cd458c, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1446165148, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xa9cd4564, mutex=0xa9cd458c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xa9cd4564, mutex=0xa9cd458c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 13 (LWP 13930):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xaa4d5594, futex_word@entry=0xaf6f6670, expected=expected@entry=0, clockid=clockid@entry=-1437772520, abstime=abstime@entry=0x0, private=0, private@entry=-1437772436, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaf6f6670, expected=expected@entry=0, clockid=clockid@entry=-1437772520, abstime=abstime@entry=0x0, private=0, private@entry=2042) at futex-internal.c:139
+#3  0xb5b90514 in __pthread_cond_wait_common (cond=0xaa4d556c, mutex=0x0, clockid=-1437772520, abstime=<optimized out>) at pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xaa4d556c, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
+#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
+#6  0x00413ebc in __abi_wrap_pthread_cond_timedwait ()
+#7  0xaec063f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 12 (LWP 13929):
+#0  0xb5c00ab4 in epoll_wait (epfd=39, events=0xaf803248, maxevents=32, timeout=30000) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
+#1  0x0050fd84 in epoll_dispatch ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 11 (LWP 13928):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xab4d758c, futex_word@entry=0xaebd8314, expected=33152, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1420987036, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xab4d7564, mutex=0xab4d758c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xab4d7564, mutex=0xab4d758c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 10 (LWP 13927):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xabcd858c, futex_word@entry=0xaebd8314, expected=43, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1412594332, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xabcd8564, mutex=0xabcd858c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xabcd8564, mutex=0xabcd858c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 9 (LWP 13926):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xac4d958c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1404201628, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xac4d9564, mutex=0xac4d958c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xac4d9564, mutex=0xac4d958c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 8 (LWP 13924):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xaccda634, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1395808756, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xaccda60c, mutex=0xaccda634, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xaccda60c, mutex=0xaccda634) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 7 (LWP 13925):
+#0  0xb5c00ab4 in epoll_wait (epfd=34, events=0xafa007c8, maxevents=32, timeout=-1) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
+#1  0x0050fd84 in epoll_dispatch ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 6 (LWP 13923):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0x5bf788, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=6026948, abstime=abstime@entry=0x0, private=0, private@entry=6027104, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=6026948, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b90514 in __pthread_cond_wait_common (cond=0x5bf760, mutex=0x0, clockid=6026948, abstime=<optimized out>) at pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0x5bf760, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
+#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
+#6  0x00413ebc in __abi_wrap_pthread_cond_timedwait ()
+#7  0xaec063f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 5 (LWP 13922):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xb05fe58c, futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1335892636, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaebd8314, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb05fe564, mutex=0xb05fe58c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xb05fe564, mutex=0xb05fe58c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 4 (LWP 13921):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xb11d5634, futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1323477492, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb11d560c, mutex=0xb11d5634, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xb11d560c, mutex=0xb11d5634) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 3 (LWP 13920):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xb19d657c, futex_word@entry=0x56b504 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1315084972, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x56b504 <pthread_cond_wait@got.plt>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xb19d6554, mutex=0xb19d657c, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xb19d6554, mutex=0xb19d657c) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 2 (LWP 13918):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0x5a4230, futex_word@entry=0x0, expected=453385815, expected@entry=0, clockid=clockid@entry=5915108, abstime=abstime@entry=0x0, private=0, private@entry=5915144, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x0, expected=expected@entry=0, clockid=clockid@entry=5915108, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b90514 in __pthread_cond_wait_common (cond=0x5a4208, mutex=0x0, clockid=5915108, abstime=<optimized out>) at pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0x5a4208, mutex=0x0, abstime=<optimized out>) at pthread_cond_wait.c:643
+#5  0xb5b90614 in ___pthread_cond_timedwait (cond=<optimized out>, mutex=<optimized out>, abstime=<optimized out>) at pthread_cond_wait.c:658
+#6  0x00446df4 in starboard::ConditionVariable::WaitTimed(long long) const ()
+#7  0x00446b0c in starboard::Semaphore::TakeWait(long long) ()
+#8  0x00446510 in starboard::Thread::WaitForJoin(long long) ()
+#9  0x00506a9c in starboard::shared::signal::SignalHandlerThread::Run() ()
+#10 0x00445dd0 in starboard::Thread::ThreadEntryPoint(void*) ()
+#11 0xb5b90eac in start_thread (arg=0xb21d7e60) at pthread_create.c:447
+#12 0xb5c0048c in ?? () at ../sysdeps/unix/sysv/linux/arm/clone3.S:71 from /lib/libc.so.6
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 1 (LWP 13889):
+#0  0xb5b8d6f8 in __futex_abstimed_wait_common32 (private=<optimized out>, futex_word=<optimized out>, expected=<optimized out>, op=<optimized out>, abstime=<optimized out>, cancel=<optimized out>) at futex-internal.c:40
+#1  __futex_abstimed_wait_common (futex_word=0xbeffde94, futex_word@entry=0xbeffdcd8, expected=25329656, expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=0, private@entry=-1090527636, cancel=cancel@entry=true) at futex-internal.c:99
+#2  0xb5b8d838 in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xbeffdcd8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at futex-internal.c:139
+#3  0xb5b901bc in __pthread_cond_wait_common (cond=0xbeffde6c, mutex=0xbeffde94, clockid=0, abstime=0x0) at pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xbeffde6c, mutex=0xbeffde94) at pthread_cond_wait.c:618
+#5  0x004140c8 in __abi_wrap_pthread_cond_wait ()
+#6  0xaec06318 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+(gdb) mesa-debugsource-24.3.4-0.armv7l
