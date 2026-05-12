@@ -1,32 +1,92 @@
-Thread 1 "cobalt_launcher" hit Breakpoint 1, __pthread_create_2_1 (newthread=0x5ddca0, attr=0xbeffdac0, start_routine=0xb60d0509, arg=0x5ddc80) at pthread_create.c:632
-632     in pthread_create.c
-(gdb) bt
-#0  __pthread_create_2_1 (newthread=0x5ddca0, attr=0xbeffdac0, start_routine=0xb60d0509, arg=0x5ddc80) at pthread_create.c:632
-#1  0xb60f2706 in ?? () from /lib/libglib-2.0.so.0
-#2  0xb60d08f4 in g_thread_new () from /lib/libglib-2.0.so.0
-#3  0xb07b3a66 in tpl_gthread_create () from /lib/libtpl-egl.so.1
-#4  0xb07b8fac in ?? () from /lib/libtpl-egl.so.1
-#5  0xb07b0ffc in tpl_display_create () from /lib/libtpl-egl.so.1
-#6  0xb1133962 in dri2_initialize_tizen (disp=disp@entry=0x60cc08) at ../src/egl/drivers/dri2/platform_tizen.c:1440
-#7  0xb11318c0 in dri2_initialize (disp=0x60cc08) at ../src/egl/drivers/dri2/egl_dri2.c:930
-#8  0xb1124322 in eglInitialize (dpy=<optimized out>, major=0x0, minor=0x0) at ../src/egl/main/eglapi.c:722
-#9  0xaf2b2a88 in ?? ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-(gdb) c
-Continuing.
-[New LWP 4806]
+Pipeline::Pipeline(const CreateRasterizerFunction& create_rasterizer_function,
+                   const scoped_refptr<backend::RenderTarget>& render_target,
+                   backend::GraphicsContext* graphics_context,
+                   bool submit_even_if_render_tree_is_unchanged,
+                   ShutdownClearMode clear_on_shutdown_mode,
+                   const Options& options)
+    : rasterizer_created_event_(
+          base::WaitableEvent::ResetPolicy::MANUAL,
+          base::WaitableEvent::InitialState::NOT_SIGNALED),
+      render_target_(render_target),
+      graphics_context_(graphics_context),
+      rasterizer_thread_("Rasterizer"),
+      submission_disposal_thread_("RasterzrSubDisp"),
+      submit_even_if_render_tree_is_unchanged_(
+          submit_even_if_render_tree_is_unchanged),
+      last_did_rasterize_(false),
+      last_animations_expired_(true),
+      last_stat_tracked_animations_expired_(true),
+      rasterize_animations_timer_("Renderer.Rasterize.Animations",
+                                  kRasterizeAnimationsTimerMaxEntries,
+                                  true /*enable_entry_list_c_val*/),
+      ALLOW_THIS_IN_INITIALIZER_LIST(rasterize_periodic_interval_timer_(
+          "Renderer.Rasterize.DurationInterval",
+          kRasterizeAnimationsTimerMaxEntries, true /*enable_entry_list_c_val*/,
+          base::Bind(&Pipeline::FrameStatsOnFlushCallback,
+                     base::Unretained(this)))),
+      rasterize_animations_interval_timer_(
+          "Renderer.Rasterize.AnimationsInterval",
+          kRasterizeAnimationsTimerMaxEntries,
+          true /*enable_entry_list_c_val*/),
+      new_render_tree_rasterize_count_(
+          "Count.Renderer.Rasterize.NewRenderTree", 0,
+          "Total number of new render trees rasterized."),
+      new_render_tree_rasterize_time_(
+          "Time.Renderer.Rasterize.NewRenderTree", 0,
+          "The last time a new render tree was rasterized."),
+      has_active_animations_c_val_(
+          "Renderer.HasActiveAnimations", false,
+          "Is non-zero if the current render tree has active animations."),
+      animations_start_time_(
+          "Time.Renderer.Rasterize.Animations.Start", 0,
+          "The most recent time animations started playing."),
+      animations_end_time_("Time.Renderer.Rasterize.Animations.End", 0,
+                           "The most recent time animations ended playing."),
+      fallback_rasterize_count_(
+          "Count.Renderer.Rasterize.FallbackRasterize", 0,
+          "Total number of times Skia was used to render a "
+          "non-text render tree node."),
+#if defined(ENABLE_DEBUGGER)
+      ALLOW_THIS_IN_INITIALIZER_LIST(dump_current_render_tree_command_handler_(
+          "dump_render_tree",
+          base::Bind(&Pipeline::OnDumpCurrentRenderTree,
+                     base::Unretained(this)),
+          "Dumps the current render tree to text.",
+          "Dumps the current render tree either to the console if no parameter "
+          "is specified, or to a file with the specified filename relative to "
+          "the debug output folder.")),
+      ALLOW_THIS_IN_INITIALIZER_LIST(toggle_fps_stdout_command_handler_(
+          "toggle_fps_stdout",
+          base::Bind(&Pipeline::OnToggleFpsStdout, base::Unretained(this)),
+          "Toggles printing framerate stats to stdout.",
+          "When enabled, at the end of each animation (or every time a maximum "
+          "number of frames are rendered), framerate statistics are printed "
+          "to stdout.")),
+      ALLOW_THIS_IN_INITIALIZER_LIST(toggle_fps_overlay_command_handler_(
+          "toggle_fps_overlay",
+          base::Bind(&Pipeline::OnToggleFpsOverlay, base::Unretained(this)),
+          "Toggles rendering framerate stats to an overlay on the display.",
+          "Framerate statistics are rendered to a display overlay.  The "
+          "numbers are updated at the end of each animation (or every time a "
+          "maximum number of frames are rendered), framerate statistics are "
+          "printed to stdout.")),
+#endif  // defined(ENABLE_DEBUGGER)
+      clear_on_shutdown_mode_(clear_on_shutdown_mode),
+      enable_fps_stdout_(options.enable_fps_stdout),
+      enable_fps_overlay_(options.enable_fps_overlay),
+      fps_overlay_update_pending_(false) {
 
-Thread 1 "cobalt_launcher" hit Breakpoint 1, __pthread_create_2_1 (newthread=0xbeffdcac, attr=0xbeffdcb0, start_routine=0xaec086f4, arg=0xbe0408) at pthread_create.c:632
-632     in pthread_create.c
-(gdb) bt
-#0  __pthread_create_2_1 (newthread=0xbeffdcac, attr=0xbeffdcb0, start_routine=0xaec086f4, arg=0xbe0408) at pthread_create.c:632
-#1  0x00414518 in __abi_wrap_pthread_create ()
-Backtrace stopped: previous frame identical to this frame (corrupt stack?)
-(gdb) c
-Continuing.
-[New LWP 4861]
+  TRACE_EVENT0("cobalt::renderer", "Pipeline::Pipeline()");
+  // The actual Pipeline can be constructed from any thread, but we want
+  // rasterizer_thread_checker_ to be associated with the rasterizer thread,
+  // so we detach it here and let it reattach itself to the rasterizer thread
+  // when CalledOnValidThread() is called on rasterizer_thread_checker_ below.
+  DETACH_FROM_THREAD(rasterizer_thread_checker_);
+  rasterizer_thread_.StartWithOptions(
+      base::Thread::Options(base::ThreadType::kMaxValue));
 
-Thread 20 "Rasterizer" received signal SIGSEGV, Segmentation fault.
-[Switching to LWP 4861]
-0xaf446f90 in ?? ()
-(gdb)
+  rasterizer_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::Bind(&Pipeline::InitializeRasterizerThread, base::Unretained(this),
+                 create_rasterizer_function));
+}
