@@ -23,3 +23,18 @@ Thread 21 "Rasterizer" received signal SIGSEGV, Segmentation fault.
    0xaf446fd8:  bl      0xaf678d90
    0xaf446fdc:  ldr     r5, [r4, #80]   ; 0x50
 (gdb)
+
+meson setup --prefix %{_hal_prefix} build/ \
+        -Dc_link_args="-lttrace" \
+        -Dcpp_link_args="-lttrace" \
+        -Dlibdir=%{_hal_libdir} \
+        -Dgallium-va=disabled \
+        -Dgallium-vdpau=disabled \
+        -Dgallium-xa=disabled \
+        -Dglx=disabled \
+        -Ddraw-use-llvm=false \
+        -Dllvm=disabled \
+        -Dgbm=%{?enable_gbm:enabled}%{?!enable_gbm:disabled} \
+        -Dplatforms="tizen" \
+        -Dgallium-drivers=%{gallium_drivers} \
+        -Dvulkan-drivers=%{vulkan_drivers}
