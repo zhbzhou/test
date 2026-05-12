@@ -38,3 +38,5 @@ meson setup --prefix %{_hal_prefix} build/ \
         -Dplatforms="tizen" \
         -Dgallium-drivers=%{gallium_drivers} \
         -Dvulkan-drivers=%{vulkan_drivers}
+		
+		[   34s] meson.build:1814:2: ERROR: Problem encountered: llvmpipe requires LLVM and is enabled, but LLVM is disabled.
