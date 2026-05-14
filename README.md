@@ -1,92 +1,84 @@
-Pipeline::Pipeline(const CreateRasterizerFunction& create_rasterizer_function,
-                   const scoped_refptr<backend::RenderTarget>& render_target,
-                   backend::GraphicsContext* graphics_context,
-                   bool submit_even_if_render_tree_is_unchanged,
-                   ShutdownClearMode clear_on_shutdown_mode,
-                   const Options& options)
-    : rasterizer_created_event_(
-          base::WaitableEvent::ResetPolicy::MANUAL,
-          base::WaitableEvent::InitialState::NOT_SIGNALED),
-      render_target_(render_target),
-      graphics_context_(graphics_context),
-      rasterizer_thread_("Rasterizer"),
-      submission_disposal_thread_("RasterzrSubDisp"),
-      submit_even_if_render_tree_is_unchanged_(
-          submit_even_if_render_tree_is_unchanged),
-      last_did_rasterize_(false),
-      last_animations_expired_(true),
-      last_stat_tracked_animations_expired_(true),
-      rasterize_animations_timer_("Renderer.Rasterize.Animations",
-                                  kRasterizeAnimationsTimerMaxEntries,
-                                  true /*enable_entry_list_c_val*/),
-      ALLOW_THIS_IN_INITIALIZER_LIST(rasterize_periodic_interval_timer_(
-          "Renderer.Rasterize.DurationInterval",
-          kRasterizeAnimationsTimerMaxEntries, true /*enable_entry_list_c_val*/,
-          base::Bind(&Pipeline::FrameStatsOnFlushCallback,
-                     base::Unretained(this)))),
-      rasterize_animations_interval_timer_(
-          "Renderer.Rasterize.AnimationsInterval",
-          kRasterizeAnimationsTimerMaxEntries,
-          true /*enable_entry_list_c_val*/),
-      new_render_tree_rasterize_count_(
-          "Count.Renderer.Rasterize.NewRenderTree", 0,
-          "Total number of new render trees rasterized."),
-      new_render_tree_rasterize_time_(
-          "Time.Renderer.Rasterize.NewRenderTree", 0,
-          "The last time a new render tree was rasterized."),
-      has_active_animations_c_val_(
-          "Renderer.HasActiveAnimations", false,
-          "Is non-zero if the current render tree has active animations."),
-      animations_start_time_(
-          "Time.Renderer.Rasterize.Animations.Start", 0,
-          "The most recent time animations started playing."),
-      animations_end_time_("Time.Renderer.Rasterize.Animations.End", 0,
-                           "The most recent time animations ended playing."),
-      fallback_rasterize_count_(
-          "Count.Renderer.Rasterize.FallbackRasterize", 0,
-          "Total number of times Skia was used to render a "
-          "non-text render tree node."),
-#if defined(ENABLE_DEBUGGER)
-      ALLOW_THIS_IN_INITIALIZER_LIST(dump_current_render_tree_command_handler_(
-          "dump_render_tree",
-          base::Bind(&Pipeline::OnDumpCurrentRenderTree,
-                     base::Unretained(this)),
-          "Dumps the current render tree to text.",
-          "Dumps the current render tree either to the console if no parameter "
-          "is specified, or to a file with the specified filename relative to "
-          "the debug output folder.")),
-      ALLOW_THIS_IN_INITIALIZER_LIST(toggle_fps_stdout_command_handler_(
-          "toggle_fps_stdout",
-          base::Bind(&Pipeline::OnToggleFpsStdout, base::Unretained(this)),
-          "Toggles printing framerate stats to stdout.",
-          "When enabled, at the end of each animation (or every time a maximum "
-          "number of frames are rendered), framerate statistics are printed "
-          "to stdout.")),
-      ALLOW_THIS_IN_INITIALIZER_LIST(toggle_fps_overlay_command_handler_(
-          "toggle_fps_overlay",
-          base::Bind(&Pipeline::OnToggleFpsOverlay, base::Unretained(this)),
-          "Toggles rendering framerate stats to an overlay on the display.",
-          "Framerate statistics are rendered to a display overlay.  The "
-          "numbers are updated at the end of each animation (or every time a "
-          "maximum number of frames are rendered), framerate statistics are "
-          "printed to stdout.")),
-#endif  // defined(ENABLE_DEBUGGER)
-      clear_on_shutdown_mode_(clear_on_shutdown_mode),
-      enable_fps_stdout_(options.enable_fps_stdout),
-      enable_fps_overlay_(options.enable_fps_overlay),
-      fps_overlay_update_pending_(false) {
-
-  TRACE_EVENT0("cobalt::renderer", "Pipeline::Pipeline()");
-  // The actual Pipeline can be constructed from any thread, but we want
-  // rasterizer_thread_checker_ to be associated with the rasterizer thread,
-  // so we detach it here and let it reattach itself to the rasterizer thread
-  // when CalledOnValidThread() is called on rasterizer_thread_checker_ below.
-  DETACH_FROM_THREAD(rasterizer_thread_checker_);
-  rasterizer_thread_.StartWithOptions(
-      base::Thread::Options(base::ThreadType::kMaxValue));
-
-  rasterizer_thread_.task_runner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Pipeline::InitializeRasterizerThread, base::Unretained(this),
-                 create_rasterizer_function));
-}
+(cobalt_dev) zhbzhou@zhbzhou:~/workspace/mesaissue/googlecobalt/cobalt$ ninja -C $EVERGREEN_DIR cobalt
+ninja: Entering directory `out/evergreen-arm-softfp_qa'
+[1/6665] CXX x86/obj/third_party/protobuf/protobuf_full/strtod.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/strtod.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/strtod.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/io/strtod.cc -o x86/obj/third_party/protobuf/protobuf_full/strtod.o
+../../third_party/protobuf/src/google/protobuf/io/strtod.cc:33:10: fatal error: 'cstdio' file not found
+#include <cstdio>
+         ^~~~~~~~
+1 error generated.
+[2/6665] CXX x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream.cc -o x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream.o
+In file included from ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream.cc:35:
+../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream.h:110:10: fatal error: 'string' file not found
+#include <string>
+         ^~~~~~~~
+1 error generated.
+[3/6665] CXX x86/obj/third_party/protobuf/protobuf_full/coded_stream.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/coded_stream.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/coded_stream.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/io/coded_stream.cc -o x86/obj/third_party/protobuf/protobuf_full/coded_stream.o
+In file included from ../../third_party/protobuf/src/google/protobuf/io/coded_stream.cc:41:
+In file included from /home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/lib/clang/17/include/limits.h:21:
+/usr/include/limits.h:26:10: fatal error: 'bits/libc-header-start.h' file not found
+#include <bits/libc-header-start.h>
+         ^~~~~~~~~~~~~~~~~~~~~~~~~~
+1 error generated.
+[4/6665] CXX x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl_lite.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl_lite.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl_lite.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl_lite.cc -o x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl_lite.o
+In file included from ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl_lite.cc:35:
+../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl_lite.h:47:10: fatal error: 'iosfwd' file not found
+#include <iosfwd>
+         ^~~~~~~~
+1 error generated.
+[5/6665] CXX x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl.cc -o x86/obj/third_party/protobuf/protobuf_full/zero_copy_stream_impl.o
+In file included from ../../third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl.cc:36:
+In file included from /usr/include/fcntl.h:25:
+In file included from /usr/include/features.h:392:
+/usr/include/features-time64.h:20:10: fatal error: 'bits/wordsize.h' file not found
+#include <bits/wordsize.h>
+         ^~~~~~~~~~~~~~~~~
+1 error generated.
+[6/6665] CXX x86/obj/third_party/protobuf/protobuf_full/generated_enum_util.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/generated_enum_util.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/generated_enum_util.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/generated_enum_util.cc -o x86/obj/third_party/protobuf/protobuf_full/generated_enum_util.o
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_enum_util.cc:31:
+../../third_party/protobuf/src/google/protobuf/generated_enum_util.h:34:10: fatal error: 'type_traits' file not found
+#include <type_traits>
+         ^~~~~~~~~~~~~
+1 error generated.
+[7/6665] CXX x86/obj/third_party/protobuf/protobuf_full/implicit_weak_message.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/implicit_weak_message.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/implicit_weak_message.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/implicit_weak_message.cc -o x86/obj/third_party/protobuf/protobuf_full/implicit_weak_message.o
+In file included from ../../third_party/protobuf/src/google/protobuf/implicit_weak_message.cc:31:
+../../third_party/protobuf/src/google/protobuf/implicit_weak_message.h:34:10: fatal error: 'string' file not found
+#include <string>
+         ^~~~~~~~
+1 error generated.
+[8/6665] CXX x86/obj/third_party/protobuf/protobuf_full/generated_message_table_driven_lite.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/generated_message_table_driven_lite.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/generated_message_table_driven_lite.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/generated_message_table_driven_lite.cc -o x86/obj/third_party/protobuf/protobuf_full/generated_message_table_driven_lite.o
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_message_table_driven_lite.cc:31:
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_message_table_driven_lite.h:34:
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_message_table_driven.h:34:
+../../third_party/protobuf/src/google/protobuf/map.h:40:10: fatal error: 'initializer_list' file not found
+#include <initializer_list>
+         ^~~~~~~~~~~~~~~~~~
+1 error generated.
+[9/6665] CXX x86/obj/third_party/protobuf/protobuf_full/generated_message_util.o
+FAILED: x86/obj/third_party/protobuf/protobuf_full/generated_message_util.o
+ccache "/home/zhbzhou/starboard-toolchains/x86_64-linux-gnu-clang-chromium-17-init-8029-g27f27d15-3/bin/clang++" -MMD -MF x86/obj/third_party/protobuf/protobuf_full/generated_message_util.o.d -DHAVE_ZLIB -DUSE_COBALT_CUSTOMIZATIONS -DSTARBOARD_BUILD_TYPE_QA -DCOBALT_BUILD_TYPE_QA -DNDEBUG -DCOBALT_PENDING_CLEAN_UP -DBASE_HASH_NAMESPACE=std -DBASE_HASH_USE_HASH_STRUCT -DGOOGLE_PROTOBUF_NO_RTTI -DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER -DHAVE_PTHREAD -DSTDC -I../.. -Ix86/gen -I../../third_party/protobuf/src -I../../third_party/zlib -m32 -O2 -fdata-sections -ffunction-sections -fno-unique-section-names -Werror -Wall -Wno-unused-variable -Wno-c++11-narrowing -Wno-missing-field-initializers -Wno-unused-parameter -Wloop-analysis -Wno-unneeded-internal-declaration -Wno-extra-semi -Wno-pessimizing-move -Wno-shadow -Wno-range-loop-bind-reference -Wno-range-loop-construct -Wno-unused-result -Wno-unused-function -O2 -Wno-c99-designator -Wno-deprecated-declarations -Wno-ignored-qualifiers -Wno-implicit-fallthrough -Wno-inconsistent-missing-override -Wno-invalid-noreturn -Wno-macro-redefined -Wno-pessimizing-move -Wno-reorder-ctor -Wno-sign-compare -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-return-type -Wno-shorten-64-to-32 -Wno-unknown-attributes -Wno-unused-command-line-argument -Wno-unused-function -Wno-tautological-pointer-compare -Wno-shadow -Wno-unreachable-code-break -fno-exceptions -std=gnu++17 -fno-rtti -c ../../third_party/protobuf/src/google/protobuf/generated_message_util.cc -o x86/obj/third_party/protobuf/protobuf_full/generated_message_util.o
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_message_util.cc:35:
+In file included from ../../third_party/protobuf/src/google/protobuf/generated_message_util.h:41:
+In file included from /usr/include/assert.h:35:
+In file included from /usr/include/features.h:392:
+/usr/include/features-time64.h:20:10: fatal error: 'bits/wordsize.h' file not found
+#include <bits/wordsize.h>
+         ^~~~~~~~~~~~~~~~~
+1 error generated.
+[10/6665] ACTION //cobalt/browser:cached_jinja_templates(//starboard/evergreen/arm/softfp/toolchain:target)
+ninja: build stopped: subcommand failed.
+(cobalt_dev) zhbzhou@zhbzhou:~/workspace/mesaissue/googlecobalt/cobalt$ ninja -C $EVERGREEN_DIR cobalt
